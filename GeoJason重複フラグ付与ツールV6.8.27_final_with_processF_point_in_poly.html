@@ -1,0 +1,3473 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GeoJSON（地図なし）統合/重複フラグ/出典削除/連番/面積付与/色編集 － 作業保持＋一括出力</title>
+<script src="./libs/turf/turf.min.js"></script>
+<link rel="stylesheet" href="./libs/leaflet/leaflet.css">
+<script src="./libs/leaflet/leaflet.js"></script>
+
+
+<style>
+:root { --bd:#e5e7eb; --fg:#111827; --mut:#6b7280; }
+body{ margin:0; font:14px/1.6 system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans JP",sans-serif; color:var(--fg); background:#f6f7fb; }
+
+/* ===== 2ペイン全体 ===== */
+.app{
+  height:100vh;
+  display:flex;
+  flex-direction:row;
+  flex-wrap:nowrap;            /* 絶対に縦落ちしない */
+  gap:12px;
+  padding:14px;
+  box-sizing:border-box;
+  overflow-x:auto;             /* 狭い画面では横スクロール */
+}
+
+/* ===== レイアウト固定：左=操作盤 / 右=（マップ任意＋ログ） ===== */
+.panel{
+  flex:0 0 560px;              /* 左ペイン固定幅 */
+  max-width:560px;
+  min-width:360px;             /* 予備（極端に狭い場合） */
+}
+.rightCol{
+  flex:1 1 auto;               /* 右ペイン可変 */
+  min-width:360px;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+/* ===== 左：操作パネル ===== */
+.panel{
+  background:#fff;
+  border:1px solid var(--bd);
+  border-radius:12px;
+  box-shadow:0 2px 14px rgba(0,0,0,.08);
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+}
+.panelHeader{
+  padding:14px;
+  border-bottom:1px solid var(--bd);
+}
+.panelBody{
+  padding:14px;
+  flex:1 1 auto;
+  overflow:auto;            /* 左スクロール */
+  min-height:0;
+}
+
+/* ===== 右（下段）：ログ ===== */
+.logPane{
+  background:#0b1220;
+  border:1px solid var(--bd);
+  border-radius:12px;
+  box-shadow:0 2px 14px rgba(0,0,0,.08);
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+}
+.logHeader{
+  padding:12px 14px;
+  border-bottom:1px solid rgba(229,231,235,.15);
+  color:#e5e7eb;
+  font-weight:700;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.logHeaderLeft{
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+.logHeaderRight{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.log{
+  flex:1;
+  overflow:auto;            /* 右スクロール */
+  padding:12px 14px;
+  color:#e5e7eb;
+  font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;
+  white-space:pre-wrap;
+}
+
+/* ===== ログ切替（テキスト / フロー） ===== */
+.viewHidden{ display:none !important; }
+.tabs{ display:flex; gap:6px; align-items:center; }
+.tabbtn{
+  border:1px solid rgba(229,231,235,.25);
+  background:rgba(255,255,255,.06);
+  color:#e5e7eb;
+  border-radius:999px;
+  padding:6px 10px;
+  cursor:pointer;
+  font-size:12px;
+}
+.tabbtn.active{
+  background:#155eef;
+  border-color:#155eef;
+  color:#fff;
+}
+
+/* フローログ */
+.flowLog{
+  flex:1;
+  overflow:auto;
+  padding:12px 14px;
+  color:#e5e7eb;
+  font-size:12px;
+  line-height:1.45;
+}
+.flowItem{
+  position:relative;
+  border:1px solid rgba(229,231,235,.14);
+  border-radius:12px;
+  padding:10px 10px 10px 14px;
+  background:rgba(255,255,255,.03);
+  margin-bottom:10px;
+  cursor:pointer;
+}
+.flowItem:hover{ background:rgba(21,94,239,.18); border-color:rgba(21,94,239,.35); }
+.flowHead{
+  display:flex;
+  gap:10px;
+  justify-content:space-between;
+  align-items:flex-start;
+}
+.flowNo{ font-weight:900; color:#c7d2fe; }
+.flowType{
+  display:inline-block;
+  padding:2px 8px;
+  border-radius:999px;
+  border:1px solid rgba(229,231,235,.18);
+  font-size:11px;
+  background:rgba(255,255,255,.06);
+}
+.flowTime{ color:rgba(229,231,235,.75); font-size:11px; }
+.flowSummary{ margin-top:6px; color:rgba(229,231,235,.92); white-space:pre-wrap; }
+.flowPid{ color:rgba(229,231,235,.7); font-size:11px; }
+
+/* ===== 既存UI見た目 ===== */
+h1{ font-size:18px; margin:0 0 6px; }
+.mut{ color:var(--mut); font-size:12px; }
+.grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.grid3{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px; }
+.grid4{ display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:10px; }
+@media (max-width:760px){ .grid, .grid3, .grid4{ grid-template-columns:1fr; } }
+
+label{ display:block; font-size:12px; color:#374151; }
+input[type="text"], textarea, select, input[type="number"]{
+  width:100%; box-sizing:border-box; border:1px solid var(--bd); border-radius:10px;
+  padding:8px 10px; font:13px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;
+  background:#fff;
+}
+textarea{ min-height:84px; resize:vertical; }
+.row{ display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:10px; }
+.btn{
+  border:1px solid #cbd5e1; background:#fff; border-radius:10px;
+  padding:8px 12px; cursor:pointer;
+}
+.btn.primary{ background:#155eef; color:#fff; border-color:#155eef; }
+.btn.danger{ border-color:#b42318; color:#b42318; }
+.btn.warn{ border-color:#b45309; color:#b45309; }
+.btn.small{ padding:6px 10px; border-radius:10px; font-size:12px; }
+.pill{ display:inline-block; border:1px solid var(--bd); border-radius:999px; padding:2px 10px; font-size:12px; background:#fff; }
+.hr{ height:1px; background:var(--bd); margin:12px 0; }
+.small{ font-size:12px; color:var(--mut); }
+.sectionTitle{ font-weight:700; margin-top:4px; }
+
+/* 候補UI */
+.candBox{ border:1px solid var(--bd); border-radius:10px; padding:10px; background:#fff; }
+.candHead{ display:flex; gap:10px; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.candList{ border:1px solid var(--bd); border-radius:10px; max-height:200px; overflow:auto; padding:6px; background:#fafafa; }
+.candItem{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 8px; border-radius:8px; cursor:pointer; }
+.candItem:hover{ background:#eef2ff; }
+.candItem .v{ word-break:break-all; }
+.candItem .add{ font-size:12px; color:#155eef; }
+
+/* ===== 機能選択（段階的UI改修の土台） ===== */
+.featureSection{ }
+.hidden{ display:none !important; }
+
+/* 右：処理イメージ（ログとは別枠） */
+.imagePane{
+  border-bottom:1px solid rgba(229,231,235,.15);
+  padding:12px 14px;
+  color:#e5e7eb;
+  background:rgba(255,255,255,.03);
+}
+.imageTitle{ font-weight:800; margin-bottom:4px; }
+.imageDesc{ color:rgba(229,231,235,.75); font-size:12px; margin-bottom:8px; white-space:pre-wrap; }
+.imagePlaceholder{
+  border:1px dashed rgba(229,231,235,.25);
+  border-radius:10px;
+  padding:10px;
+  background:rgba(0,0,0,.15);
+  color:rgba(229,231,235,.7);
+  font-size:12px;
+}
+
+/* 色入力 */
+.colorRow{ display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+@media (max-width:760px){ .colorRow{ grid-template-columns:1fr; } }
+.colorInput{
+  display:flex; gap:10px; align-items:center;
+  border:1px solid var(--bd);
+  border-radius:10px;
+  padding:8px 10px;
+  background:#fff;
+}
+.colorInput input[type="color"]{ width:46px; height:32px; border:none; padding:0; background:transparent; }
+.colorInput .cap{ font-size:12px; color:#374151; min-width:64px; }
+.colorInput .val{ flex:1; font-family: ui-monospace,SFMono-Regular,Consolas,monospace; font-size:13px; }
+
+/* E: 全体適用モードのときの見た目（軽い補助） */
+.dim{ opacity:0.55; pointer-events:none; }
+
+/* 1列縦並び用（E: 色編集UI用） */
+.stack{
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 縦1列並び用 */
+.stackCol{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.stack > div input,
+.stack > div select,
+.stack > div button{
+  width:100%;
+  box-sizing:border-box;
+}
+
+
+
+
+
+/* ===== 右上（ログの外側上部）：workingマッププレビュー ===== */
+.mapOuter{
+  background:#0b1220;
+  border:1px solid rgba(229,231,235,.15);
+  border-radius:12px;
+  box-shadow:0 2px 14px rgba(0,0,0,.08);
+  overflow:hidden;
+}
+.mapOuterHeader{
+  padding:10px 12px;
+  border-bottom:1px solid rgba(229,231,235,.15);
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.mapOuterTitle{
+  color:#e5e7eb;
+  font-weight:700;
+}
+.mapOuterHeaderRight{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+}
+.mapNote{ color:rgba(229,231,235,.75); font-size:12px; }
+.mapOuterBody{
+  width:100%;
+  height:300px;
+  background:rgba(0,0,0,.18);
+}
+
+
+/* 2ペインで右側が下に落ちないようにする保険 */
+.app{ align-items:stretch; }
+.panel, .rightCol, .logPane{ min-width:0; }
+</style>
+</head>
+
+<body>
+  <div class="app">
+    <!-- 左：操作パネル -->
+    <div class="panel">
+      <div class="panelHeader">
+        <h1>GeoJSON（地図なし）: 統合 / 重複フラグ / 出典削除 / 連番 / 面積付与 / 色編集（作業保持＋一括出力）</h1>
+        <div class="mut">
+          A/B/C/D/Eの処理を「作業中データ」に積み上げ、最後に「一括出力」で反映済みデータをダウンロードできます。
+          ログは消さずに下へ積み上げます（右上の「ログクリア」で削除可能）。
+        </div>
+      </div>
+
+      <div class="panelBody">
+        <div class="row">
+          <input id="file" type="file" accept=".geojson,.json" multiple />
+          <label class="pill"><input id="verbose" type="checkbox" checked style="margin-right:6px;">ログを詳細に</label>
+          <label class="pill"><input id="autoDownload" type="checkbox" style="margin-right:6px;">各処理で自動出力もする（旧挙動）</label>
+        </div>
+
+        <div class="hr"></div>
+
+        <div class="sectionTitle">データ区分（A=書き込み対象 / B=判定素材）</div>
+        <div class="small">※ 読み込み後、ファイル名候補から選択できます。Aは1つのみ、Bは残りの数だけ入力欄が増えます（B1, B2...）。</div>
+
+        <div class="grid" style="margin-top:8px;">
+          <div>
+            <label>データA（1つのみ）</label>
+            <input id="groupA" type="text" list="fileNameList" placeholder="読み込み後に選択" />
+            <div class="small">※ 基本的に今後の「書き込み対象」はAを想定</div>
+          </div>
+          <div>
+            <label>対象範囲（将来用）</label>
+            <select id="scopeSelector">
+              <option value="A" selected>Aのみ（推奨）</option>
+              <option value="AB">A+B（全体）</option>
+            </select>
+            <div class="small">※ 現段階では従来どおり「全体working」に適用。AはA由来featureのみ更新の仕様です。</div>
+          </div>
+        </div>
+
+        <div id="groupBContainer" style="margin-top:10px;"></div>
+
+        <datalist id="fileNameList"></datalist>
+
+        <div class="row">
+          <button class="btn" id="btnAutoGroup">自動割当（A=先頭, B=残り）</button>
+          <button class="btn" id="btnClearGroup">区分クリア</button>
+        </div>
+
+        <div class="hr"></div>
+
+        <div class="grid3" style="margin-top:10px;">
+          <div>
+            <label>統合時：出典キー名（空なら付与しない）</label>
+            <input id="srcKey" type="text" placeholder="例: _src" value="_src" />
+            <label class="pill" style="display:inline-flex;align-items:center;gap:6px;margin-top:6px;">
+              <input id="srcInject" type="checkbox" />
+              読み込み時に各ファイルへ付与（上書き）
+            </label>
+          </div>
+          <div>
+            <label>統合時：出典値の形式</label>
+            <select id="srcMode">
+              <option value="basename" selected>ファイル名（拡張子なし）</option>
+              <option value="filename">ファイル名（拡張子あり）</option>
+            </select>
+          </div>
+          <div>
+            <label>現在の作業データ</label>
+            <button class="btn" id="btnExportWorking" style="width:100%;">一括出力（現在のworkingを書き出し）</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <button class="btn" id="btnResetWorking">workingを読み込み直後の状態に戻す</button>
+          <button class="btn" id="btnExportMerged">読み込み直後（merged原本）を書き出し</button>
+        </div>
+
+        <div class="hr"></div>
+        <div class="row">
+          <label style="min-width:88px; font-weight:700; color:#111827;">機能選択</label>
+          <select id="featureSelect" style="max-width:360px;">
+            <option value="ALL" selected>全体（すべて表示）</option>
+            <option value="A">A. 重複フラグ付与</option>
+            <option value="B">B. 条件削除</option>
+            <option value="C">C. 連番付与</option>
+            <option value="D">D. 面積（㎡）付与</option>
+            <option value="E">E. 色（スタイル）編集</option>
+            <option value="F">F. 点→面 包含判定（ポイントにフラグ/属性付与）</option>
+          </select>
+          <span class="small">選択した機能のメニューだけ表示します（今後増えても見やすくする土台）</span>
+        </div>
+
+        <!-- A -->
+        <div class="featureSection" data-feature="A">
+          <div class="sectionTitle">A. 重複フラグ付与（書き込み対象=Aのみ / 判定素材=B1〜から1つ選択）</div>
+
+          <div class="grid">
+            <div>
+              <label>判定データB（B1〜から1つ選択）</label>
+              <select id="overlapBSelect"></select>
+              <div class="small">※ ここで選んだBのみを「重複判定素材」として使用します（refKey/refVals の候補もこのBから抽出）</div>
+            </div>
+            <div>
+              <label>基準抽出キー（例：YoutoName / _src）</label>
+              <input id="refKey" type="text" placeholder="例: YoutoName" list="keyList" />
+              <datalist id="keyList"></datalist>
+              <div class="small" style="margin-top:6px;">候補から選択（プルダウン）：</div>
+              <select id="refKeySel"></select>
+              <div class="small">※ 候補は「選択したBのキー（重複排除）」</div>
+            </div>
+            <div>
+              <label>付与する新キー名（例：is_overlap）</label>
+              <input id="outKey" type="text" placeholder="例: is_overlap" />
+            </div>
+
+            <!-- ★拡張：部分重複=2 ＋ 重複面積キー -->
+            <div>
+              <label>完全扱い閾値（0〜1）<span class="small">（重複率がこの値以上なら 1、未満なら 2）</span></label>
+              <input id="fullTreatThreshold" type="text" value="0.95" />
+              <div class="small">例：0.95＝ほぼ全重複は「1（完全扱い）」、それ未満は「2（部分重複）」</div>
+            </div>
+            <div>
+              <label>重複面積キー名（㎡）<span class="small">（空なら面積は付与しない）</span></label>
+              <input id="overlapAreaKey" type="text" placeholder="例: overlap_m2" value="overlap_m2" />
+              <div class="small">※ Polygon/MultiPolygon のみ計算。その他は null。</div>
+            </div>
+            <div class="row">
+              <label class="pill"><input type="checkbox" id="enableOverlapArea" checked style="margin-right:6px;">部分重複時に重複面積を付与</label>
+            </div>
+
+            <div>
+              <label>重複面積の小数桁（0〜6 推奨）</label>
+              <input id="overlapAreaDecimals" type="text" value="0" />
+            </div>
+
+            <div style="grid-column:1/-1; display:flex; align-items:center; gap:8px; margin-top:2px;">
+              <input type="checkbox" id="exportApproxOverlapPolys" style="margin-right:6px;">
+              <div>重複部分の近似シェイプ（ポリゴン）を別GeoJSONで出力（チェック時のみ）</div>
+            </div>
+            <div class="small" style="grid-column:1/-1; margin-top:-6px;">※ 「部分重複(2)」の重複領域をポリゴンとして別ファイルに出力します（取れれば交差ポリゴン、取れなければサンプリング近似）。</div>
+
+
+            <div style="grid-column:1/-1;">
+              <label>基準抽出値（候補から追加できます。手入力もOK）</label>
+
+              <div class="candBox">
+                <div class="candHead">
+                  <div style="flex:1;">
+                    <input id="valSearch" type="text" placeholder="候補の絞り込み（部分一致）" />
+                    <div class="small" id="valStat">候補: -</div>
+                  </div>
+                  <div style="display:flex; gap:8px; align-items:center;">
+                    <button class="btn" id="btnAddAll">表示中を全部追加</button>
+                    <button class="btn" id="btnClearVals">基準抽出値をクリア</button>
+                  </div>
+                </div>
+                <div class="candList" id="valList">
+                  <div class="small">refKey を入力すると候補が出ます（読み込み済みが前提）</div>
+                </div>
+              </div>
+
+              <div style="margin-top:8px;">
+                <textarea id="refVals" placeholder="例: 準工業&#10;準住居"></textarea>
+                <div class="small">※ 区切りは「改行」または「カンマ」</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="row">
+            <label class="pill"><input type="checkbox" id="trim" checked style="margin-right:6px;">前後空白除去</label>
+            <label class="pill"><input type="checkbox" id="nfkc" checked style="margin-right:6px;">NFKC正規化</label>
+            <label class="pill"><input type="checkbox" id="ignorecase" checked style="margin-right:6px;">大小無視</label>
+
+            <label class="pill">判定方法：
+              <select id="method" style="width:auto; padding:4px 8px; border-radius:999px;">
+                <option value="intersects" selected>intersects（交差/接触含む）</option>
+                <option value="overlaps">overlaps（重なり：点は除外）</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="row">
+            <button class="btn" id="btnPreviewA">Aプレビュー（件数）</button>
+            <button class="btn warn" id="btnApplyA">Aをworkingへ適用（保持）</button>
+            <button class="btn" id="btnExportA">Aだけ反映したデータを出力（単発）</button>
+          </div>
+          <div class="row" style="align-items:center; gap:10px; margin-top:6px;">
+            <div id="progressAStatus" class="small" style="min-width:160px;">（待機中）</div>
+            <progress id="progressA" value="0" max="1" style="flex:1; height:14px;"></progress>
+            <button class="btn danger" id="btnCancelA" disabled>キャンセル</button>
+          </div>
+
+        </div>
+
+        <div class="hr"></div>
+
+        <!-- B -->
+        <div class="featureSection" data-feature="B">
+          <div class="sectionTitle">B. 指定キー/値のFeatureを削除（workingに適用して保持）</div>
+
+          <div class="grid">
+            <div>
+              <label>削除対象キー（候補補完あり）</label>
+              <input id="delKey" type="text" placeholder="例: _src" list="keyList" />
+              <div class="small" style="margin-top:6px;">候補から選択（プルダウン）：</div>
+              <select id="delKeySel"></select>
+            </div>
+            <div>
+              <label>削除後データのファイル名ラベル（単発出力用）</label>
+              <input id="delLabel" type="text" placeholder="例: removed_sources" value="removed" />
+            </div>
+
+            <div style="grid-column:1/-1;">
+              <label>削除対象値（候補から追加できます。手入力もOK）</label>
+
+              <div class="candBox">
+                <div class="candHead">
+                  <div style="flex:1;">
+                    <input id="delValSearch" type="text" placeholder="候補の絞り込み（部分一致）" />
+                    <div class="small" id="delValStat">候補: -</div>
+                  </div>
+                  <div style="display:flex; gap:8px; align-items:center;">
+                    <button class="btn" id="btnDelAddAll">表示中を全部追加</button>
+                    <button class="btn" id="btnDelClearVals">削除対象値をクリア</button>
+                  </div>
+                </div>
+                <div class="candList" id="delValList">
+                  <div class="small">delKey を入力すると候補が出ます（読み込み済みが前提）</div>
+                </div>
+              </div>
+
+              <div style="margin-top:8px;">
+                <textarea id="delVals" placeholder="例: layerA&#10;layerB"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <div class="row">
+            <button class="btn" id="btnPreviewB">Bプレビュー（件数）</button>
+            <button class="btn warn" id="btnApplyB">Bをworkingへ適用（保持）</button>
+            <button class="btn" id="btnExportB">Bだけ反映したデータを出力（単発）</button>
+          </div>
+        </div>
+
+        <div class="hr"></div>
+
+        <!-- C -->
+        <div class="featureSection" data-feature="C">
+          <div class="sectionTitle">C. 連番付与（workingに適用して保持）</div>
+
+          <div class="grid">
+            <div>
+              <label>付与するキー名</label>
+              <input id="numKey" type="text" value="uid" />
+            </div>
+            <div>
+              <label>開始番号（数値）</label>
+              <input id="numStart" type="text" value="1" />
+            </div>
+            <div>
+              <label>prefix（任意）</label>
+              <input id="numPrefix" type="text" placeholder="例: A-" />
+            </div>
+            <div>
+              <label>ゼロ埋め桁数（任意）</label>
+              <input id="numPad" type="text" placeholder="例: 6" />
+            </div>
+          </div>
+
+          <div class="row">
+            <button class="btn" id="btnPreviewC">Cプレビュー</button>
+            <button class="btn warn" id="btnApplyC">Cをworkingへ適用（保持）</button>
+            <button class="btn" id="btnExportC">Cだけ反映したデータを出力（単発）</button>
+          </div>
+        </div>
+
+        <div class="hr"></div>
+
+        <!-- D -->
+        <div class="featureSection" data-feature="D">
+          <div class="sectionTitle">D. 面積（㎡）付与（workingに適用して保持）</div>
+          <div class="small">
+            Polygon / MultiPolygon のみ面積を計算します。その他（Point/LineString等）は null を入れます。<br>
+            ※ Turf.area は地理座標（WGS84の経緯度）を前提にした球面近似の㎡です（一般的なGIS用途では十分実用的）。
+          </div>
+
+          <div class="grid">
+            <div>
+              <label>付与するキー名（面積 ㎡）</label>
+              <input id="areaKey" type="text" value="area_m2" />
+            </div>
+            <div>
+              <label>小数桁（0〜6 推奨）</label>
+              <input id="areaDecimals" type="text" value="0" />
+              <div class="small">例：0=整数㎡ / 2=小数2桁</div>
+            </div>
+          </div>
+
+          <div class="row">
+            <label class="pill"><input type="checkbox" id="areaOnlyPolygons" checked style="margin-right:6px;">Polygon系以外はnull</label>
+            <label class="pill"><input type="checkbox" id="areaOverwrite" checked style="margin-right:6px;">既存値があっても上書き</label>
+          </div>
+
+          <div class="row">
+            <button class="btn" id="btnPreviewD">Dプレビュー（件数）</button>
+            <button class="btn warn" id="btnApplyD">Dをworkingへ適用（保持）</button>
+            <button class="btn" id="btnExportD">Dだけ反映したデータを出力（単発）</button>
+          </div>
+        </div>
+
+        <div class="hr"></div>
+
+        <!-- E -->
+        <div class="featureSection" data-feature="E">
+          <div class="sectionTitle">E. 色（スタイル）編集（対象ファイル×キー×値 → 色情報を上書き）</div>
+          <div class="small">
+            地図を展開せずに属性を書き換えます。対象は「読み込み時のファイル単位」で選べます。<br>
+            例：STROKE/FILL/WEIGHT/OPACITY 等のプロパティを更新して、後段のビューア等で色が反映される想定です。
+          </div>
+
+          <div class="grid">
+            <div>
+              <label>対象ファイル（出典）</label>
+              <select id="styleFileSel"></select>
+              <div class="small">※ 読み込み済みファイルから選択（working内のその出典featureが対象）</div>
+            </div>
+            <div>
+              <label>対象キー</label>
+              <select id="styleKeySel"></select>
+              <div class="small">※ 対象ファイルのキー一覧から選択</div>
+            </div>
+
+            <div style="grid-column:1/-1;">
+              <div class="row" style="margin-top:0;">
+                <label class="pill">
+                  <input type="checkbox" id="styleApplyAll" checked style="margin-right:6px;">
+                  対象値が空なら「ファイル全体」に適用（拡張）
+                </label>
+                <span class="small">ON: 対象値が空のとき、条件なしで全featureを書換 / OFF: 値リスト必須</span>
+              </div>
+            </div>
+
+            <div id="styleFilterBlock" style="grid-column:1/-1;">
+              <label>対象キーの値（候補から追加。まとめて追加/クリア可）</label>
+
+              <div class="candBox">
+                <div class="candHead">
+                  <div style="flex:1;">
+                    <input id="styleValSearch" type="text" placeholder="候補の絞り込み（部分一致）" />
+                    <div class="small" id="styleValStat">候補: -</div>
+                  </div>
+                  <div style="display:flex; gap:8px; align-items:center;">
+                    <button class="btn" id="btnStyleAddAll">表示中を全部追加</button>
+                    <button class="btn" id="btnStyleClearVals">対象値をクリア</button>
+                  </div>
+                </div>
+                <div class="candList" id="styleValList">
+                  <div class="small">対象キーを選ぶと候補が出ます</div>
+                </div>
+              </div>
+
+              <div style="margin-top:8px;">
+                <textarea id="styleVals" placeholder="例: 準工業&#10;準住居"></textarea>
+                <div class="small">※ 区切りは「改行」または「カンマ」</div>
+              </div>
+            </div>
+          </div>
+
+          
+        <!-- F -->
+        <div class="featureSection" data-feature="F">
+          <div class="sectionTitle">F. 点→面 包含判定（ポイントにフラグ/属性付与）</div>
+          <div class="grid2">
+            <div>
+              <label>書き込み対象（ポイント）</label>
+              <select id="pipTargetSelect"></select>
+              <div class="small">※ ポイント（Point/MultiPoint）を含むGeoJSONを選択</div>
+            </div>
+            <div>
+              <label>判断用（ポリゴン）</label>
+              <select id="pipJudgeSelect"></select>
+              <div class="small">※ ポリゴン（Polygon/MultiPolygon）を含むGeoJSONを選択</div>
+            </div>
+
+            <div>
+              <label>ポイントに付与するフラグ新キー名（包含=1 / 非包含=0）</label>
+              <input id="pipOutKey" type="text" placeholder="例: in_poly_flag" />
+            </div>
+
+            <div class="card">
+              <div class="row" style="align-items:center; gap:10px;">
+                <input id="pipWritePolyVal" type="checkbox" />
+                <label for="pipWritePolyVal" style="margin:0;">ポイント側に「属するポリゴンのキー値」を書き込む</label>
+              </div>
+              <div class="grid2" style="margin-top:10px;">
+                <div>
+                  <label>ポイント側に作成する新キー名</label>
+                  <input id="pipPolyValOutKey" type="text" placeholder="例: in_poly_name" />
+                </div>
+                <div>
+                  <label>書き込むポリゴン側キー</label>
+                  <select id="pipPolyKeySelect"></select>
+                  <div class="small">※ 複数ポリゴンに属する場合は「 | 」で連結</div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="row" style="margin-top:12px; gap:10px; flex-wrap:wrap;">
+            <button class="btn" id="btnPreviewF">プレビュー（反映なし）</button>
+            <button class="btn primary" id="btnApplyF">workingへ反映</button>
+            <button class="btn" id="btnExportF">書き出し（反映なし）</button>
+            <span class="small">※ 「workingへ反映」は、書き込み対象（ポイント）を加工した結果を working として保持します</span>
+          </div>
+        </div>
+
+<div class="hr"></div>
+
+          <div class="grid">
+            <div>
+<label>色情報を書き込むプロパティ名（自由に変更可）</label>
+
+<!-- 1列縦並び（UIのみ変更 / idは維持） -->
+<div class="stack">
+  <div>
+    <label>線色キー</label>
+    <input id="styleStrokeKey" type="text" disabled value="STROKE" />
+  </div>
+
+  <div>
+    <label>塗色キー</label>
+    <input id="styleFillKey" type="text" disabled value="FILL" />
+  </div>
+
+  <div>
+    <label>線幅キー</label>
+    <input id="styleWeightKey" type="text" value="WEIGHT" />
+  </div>
+
+  <div>
+    <label>線不透明度<br>キー</label>
+    <input id="styleOpacityKey" type="text" value="OPACITY" />
+  </div>
+
+  <!-- ★拡張：塗不透明度キー（元の機能を維持） -->
+  <div>
+    <label>塗不透明度キー（拡張）</label>
+    <input id="styleFillOpacityKey" type="text" value="FILL_OPACITY" />
+    <div class="small" style="margin-top:6px;">
+      ※ 線と塗を別キーで保持したい場合に使用。不要なら空でもOKです。
+    </div>
+  </div>
+</div>
+
+            </div>
+
+<div>
+  <label>書き込む値</label>
+              <div class="small" style="margin-top:6px;">※ 色（線色/塗色）は変更しません。線幅・不透明度のみ書き込みます。</div>
+
+  <!-- 1列縦並び -->
+  <div class="stackCol">
+
+    <!-- 線色 -->
+    <div class="colorInput">
+      <span class="cap">線色</span>
+      <input id="strokeColor" type="color" disabled value="#ff0000" />
+      <input id="strokeColorText" class="val" type="text" disabled value="#ff0000" />
+    </div>
+
+    <!-- 線幅 -->
+    <div>
+      <label>線幅（数値）</label>
+      <input id="strokeWeight" type="text" value="2" />
+    </div>
+
+    <!-- 線不透明度 -->
+    <div>
+      <label>線不透明度（0〜1）</label>
+      <input id="strokeOpacity" type="text" value="1" />
+    </div>
+
+    <!-- 塗色 -->
+    <div class="colorInput">
+      <span class="cap">塗色</span>
+      <input id="fillColor" type="color" disabled value="#00ff00" />
+      <input id="fillColorText" class="val" type="text" disabled value="#00ff00" />
+    </div>
+
+    <!-- 塗不透明度 -->
+    <div>
+      <label>塗不透明度（0〜1）</label>
+      <input id="fillOpacity" type="text" value="0.35" />
+    </div>
+
+    <!-- 書き込み -->
+    <div>
+      <label>書き込み</label>
+      <label class="pill">
+        <input type="checkbox" id="styleOverwrite" checked style="margin-right:6px;">
+        既存値も上書き
+      </label>
+    </div>
+
+  </div>
+</div>
+
+
+              <div class="small" style="margin-top:6px;">
+                ※ 拡張により「塗不透明度」も別キーに書けます（FILL_OPACITY等）。
+              </div>
+            </div>
+          </div>
+
+          <div class="row">
+            <button class="btn" id="btnPreviewE">Eプレビュー（対象件数）</button>
+            <button class="btn warn" id="btnApplyE">Eをworkingへ適用（保持）</button>
+            <button class="btn" id="btnExportE">Eだけ反映したデータを出力（単発）</button>
+          </div>
+        </div>
+
+        <div class="hr"></div>
+
+        <div class="row">
+          <button class="btn danger" id="btnClear">全クリア（データも候補も初期化）</button>
+          <span class="pill" id="stat">Ready.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右：マップ（任意）＋ログ -->
+    <div class="rightCol">
+
+      <!-- マッププレビュー（ログ領域の外側・上側） -->
+      <div class="mapOuter viewHidden" id="mapPreviewWrap">
+        <div class="mapOuterHeader">
+          <div class="mapOuterTitle">working プレビュー</div>
+          <div class="mapOuterHeaderRight">
+            <span class="mapNote">※ マップ表示中は「現在のworking」を簡易描画します（処理の実行中は更新しません）。</span>
+            <button class="btn small" id="btnRefreshMap">表示更新</button>
+          </div>
+        </div>
+        <div id="mapPreview" class="mapOuterBody"></div>
+      </div>
+
+      <div class="logPane">
+      <div class="logHeader">
+        <div class="logHeaderLeft">
+          <span>ログ</span>
+          <span class="pill" id="stat2" style="background:rgba(255,255,255,.08); border-color:rgba(229,231,235,.2); color:#e5e7eb;">-</span>
+        </div>
+        <div class="logHeaderRight">
+          <div class="tabs">
+          <label class="pill" style="display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.08); border-color:rgba(229,231,235,.2); color:#e5e7eb;">
+            <input id="toggleMap" type="checkbox" style="margin:0;">
+            workingをマップ表示
+          </label>
+
+            <button class="tabbtn active" id="tabText">テキスト</button>
+            <button class="tabbtn" id="tabFlow">フロー</button>
+          </div>
+          <button class="btn small" id="btnLogClear">ログクリア</button>
+        </div>
+      </div>
+
+      <div class="imagePane" id="imagePane">
+        <div class="imageTitle" id="imageTitle">処理イメージ（プレースホルダ）</div>
+        <div class="imageDesc" id="imageDesc">ログの種類を切り替えられます。フローログでは、各ステップをクリックするとここが連動します（画像は後で差し替え可能）。</div>
+        <div class="imagePlaceholder" id="imagePlaceholder">画像ID: <b>ALL</b><br>（このIDに対応する画像を後から差し替え可能）</div>
+      </div>
+
+      <div class="log" id="log"></div>
+      <div class="flowLog viewHidden" id="flowLog"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // =========================================================
+  // 状態
+  // =========================================================
+  let fcBase = null;     // 読み込み直後（統合後）の原本
+  let fcWorking = null;  // 作業中（A/B/C/D/E適用済み）
+  let loadedFiles = [];  // {name, baseName, size, fc, featuresCount}
+  let lastKeys = [];     // 直近キー一覧（候補）
+  const valueCache = new Map(); // key -> distinct values array
+
+  // featureの由来（ファイル名）を内部保持（_srcに依存しない）
+  let baseOriginTags = [];    // base.features[i] の由来 baseName
+  let workingOriginTags = []; // working.features[i] の由来 baseName
+
+  // A/B区分の状態
+  let groupState = { A: "", Bs: [] };
+
+  // A適用のキャンセル制御
+  let cancelApplyA = false;
+
+  // UIへ制御を返す（描画・入力反映用）
+  const uiYield = () => new Promise(r => setTimeout(r, 0));
+
+  // 進捗表示（軽量：更新間引き）
+  let lastProgressUpdateAt = 0;
+  function progressAReset(total){
+    cancelApplyA = false;
+    if (btnCancelAEl){ btnCancelAEl.disabled = false; }
+    if (progressAEl){
+      progressAEl.max = Math.max(1, total|0);
+      progressAEl.value = 0;
+    }
+    if (progressAStatusEl){
+      progressAStatusEl.textContent = total ? `開始: 0 / ${total}` : "開始";
+    }
+    lastProgressUpdateAt = 0;
+  }
+  function progressAUpdate(done, total, phase){
+    const now = Date.now();
+    if (now - lastProgressUpdateAt < 120) return; // ★間引き
+    lastProgressUpdateAt = now;
+    if (progressAEl){
+      progressAEl.max = Math.max(1, total|0);
+      progressAEl.value = Math.min(done|0, total|0);
+    }
+    if (progressAStatusEl){
+      const p = total ? Math.floor((done/total)*100) : 0;
+      progressAStatusEl.textContent = `${phase||"処理中"}: ${done} / ${total} (${p}%)`;
+    }
+  }
+  function progressAFinish(msg, total){
+    if (btnCancelAEl){ btnCancelAEl.disabled = true; }
+    if (progressAStatusEl){
+      progressAStatusEl.textContent = msg || "完了";
+    }
+    if (progressAEl && total!=null){
+      progressAEl.max = Math.max(1, total|0);
+      progressAEl.value = Math.max(0, total|0);
+    }
+  }
+
+  // =========================================================
+  // DOM
+  // =========================================================
+  const $ = (sel) => document.querySelector(sel);
+  const fileEl = $("#file");
+  const verboseEl = $("#verbose");
+  const autoDownloadEl = $("#autoDownload");
+  const statEl = $("#stat");
+  const stat2El = $("#stat2");
+  const logEl = $("#log");
+
+  // 進捗（A適用）
+  const progressAEl = $("#progressA");
+  const progressAStatusEl = $("#progressAStatus");
+  const btnCancelAEl = $("#btnCancelA");
+
+  // 候補（A/B共用）
+  const keyListEl = $("#keyList");
+  const refKeySelEl = $("#refKeySel");
+  const overlapBSelectEl = $("#overlapBSelect");
+  const valSearchEl = $("#valSearch");
+  const valStatEl = $("#valStat");
+  const valListEl = $("#valList");
+
+  const delKeySelEl = $("#delKeySel");
+  const delValSearchEl = $("#delValSearch");
+  const delValStatEl = $("#delValStat");
+  const delValListEl = $("#delValList");
+
+  // ログ切替
+  const flowLogEl = $("#flowLog");
+  const btnTabText = $("#tabText");
+  const btnTabFlow = $("#tabFlow");
+  let logMode = "text";
+
+  // フローログ状態
+  let flowOps = [];
+
+  // A/B区分UI
+  const groupAEl = $("#groupA");
+  const groupBContainerEl = $("#groupBContainer");
+  const fileNameListEl = $("#fileNameList");
+  const btnAutoGroup = $("#btnAutoGroup");
+  const btnClearGroup = $("#btnClearGroup");
+
+  // 機能選択 & 右イメージ枠
+  const featureSelectEl = $("#featureSelect");
+  const imageTitleEl = $("#imageTitle");
+  const imageDescEl = $("#imageDesc");
+  const imagePlaceholderEl = $("#imagePlaceholder");
+
+
+  // workingプレビュー（マップ）
+  const toggleMapEl = $("#toggleMap");
+  const mapPreviewWrapEl = $("#mapPreviewWrap");
+  const mapPreviewEl = $("#mapPreview");
+  const btnRefreshMapEl = $("#btnRefreshMap");
+
+  let _map = null;
+  let _mapLayer = null;
+  let _mapReady = false;
+  let _mapWanted = false;
+
+  function isMapVisible(){
+    return !!toggleMapEl?.checked;
+  }
+
+  function showMapUI(show){
+    if (!mapPreviewWrapEl) return;
+    mapPreviewWrapEl.classList.toggle("viewHidden", !show);
+    _mapWanted = !!show;
+    if (show){
+      // 右枠の説明を「マップ」に寄せる（既存のフロー連動は壊さない）
+      if (imageTitleEl) imageTitleEl.textContent = "workingプレビュー（簡易マップ）";
+      if (imageDescEl) imageDescEl.textContent = "処理を重ねた結果の working を、実行していないタイミングで確認するための簡易表示です。";
+      if (imagePlaceholderEl) imagePlaceholderEl.style.display = "none";
+      ensureMap();
+      refreshMap();
+      // Leafletはサイズ確定後にinvalidateSizeが必要
+      setTimeout(()=>{ try{ _map && _map.invalidateSize(); }catch(e){} }, 0);
+    }else{
+      if (imagePlaceholderEl) imagePlaceholderEl.style.display = "";
+      // ここではタイトル等を元に戻さない（フローログ連動の挙動を優先）
+    }
+  }
+
+  function ensureMap(){
+    if (_mapReady) return;
+    if (!mapPreviewEl) return;
+
+    if (!window.L){
+      // Leafletが読み込めない環境では案内のみ
+      mapPreviewEl.innerHTML = '<div style="padding:10px;color:rgba(229,231,235,.8);font-size:12px;">Leaflet ライブラリが見つからないため、マップを表示できません。<br>同フォルダに <b>./libs/leaflet/leaflet.css</b> と <b>./libs/leaflet/leaflet.js</b> を配置してください。</div>';
+      _mapReady = true;
+      return;
+    }
+
+    _map = L.map(mapPreviewEl, {
+      zoomControl: true,
+      attributionControl: false
+    });
+
+    // ★背景タイルは使わない（オフライン前提・軽量）
+    //   ただし視認性のため、薄い背景色はCSSで付与
+
+    _mapReady = true;
+  }
+
+  function styleFromProps(props){
+    const p = props || {};
+    const stroke = p.STROKE || p.stroke || "#3b82f6";
+    const fill = p.FILL || p.fill || "rgba(59,130,246,0.18)";
+    const weight = Number(p.WEIGHT ?? p.weight ?? 2) || 2;
+    const op = Number(p.OPACITY ?? p.opacity ?? 0.9);
+    const fop = Number(p.FILL_OPACITY ?? p.fill_opacity ?? p.fillOpacity ?? 0.35);
+    return {
+      color: stroke,
+      weight: weight,
+      opacity: isFinite(op) ? op : 0.9,
+      fillColor: fill,
+      fillOpacity: isFinite(fop) ? fop : 0.35
+    };
+  }
+
+  function refreshMap(){
+    if (!_mapWanted) return;
+    if (!_mapReady) return;
+    if (!window.L || !_map) return;
+    if (!fcWorking || !fcWorking.features || fcWorking.features.length === 0){
+      if (_mapLayer){ try{ _map.removeLayer(_mapLayer); }catch(e){} _mapLayer=null; }
+      try{ _map.setView([35.68,139.76], 5); }catch(e){}
+      return;
+    }
+    try{
+      if (_mapLayer){ _map.removeLayer(_mapLayer); _mapLayer=null; }
+      _mapLayer = L.geoJSON(fcWorking, {
+        style: (feat) => styleFromProps(feat?.properties),
+        onEachFeature: (feat, layer) => {
+          layer.on("click", ()=>{
+            const props = feat?.properties || {};
+            const keys = Object.keys(props);
+            const lines = keys.slice(0, 40).map(k => `${k}: ${String(props[k])}`).join("\n");
+            log(`MAP: click feature\n${lines}${keys.length>40 ? "\n..." : ""}`);
+          });
+        }
+      }).addTo(_map);
+
+      const b = _mapLayer.getBounds();
+      if (b && b.isValid()){
+        _map.fitBounds(b.pad(0.05), { animate:false });
+      }
+      setTimeout(()=>{ try{ _map.invalidateSize(); }catch(e){} }, 0);
+    }catch(e){
+      log(`WARN: マップ描画でエラー: ${e?.message || e}`);
+    }
+  }
+
+
+  // E（色編集）
+  const styleFileSelEl = $("#styleFileSel");
+  const styleKeySelEl = $("#styleKeySel");
+  const styleValSearchEl = $("#styleValSearch");
+  const styleValStatEl = $("#styleValStat");
+  const styleValListEl = $("#styleValList");
+  const styleValsEl = $("#styleVals");
+  const btnStyleAddAllEl = $("#btnStyleAddAll");
+  const btnStyleClearValsEl = $("#btnStyleClearVals");
+
+  // ★拡張：対象値なし=全体適用
+  const styleApplyAllEl = $("#styleApplyAll");
+  const styleFilterBlockEl = $("#styleFilterBlock");
+
+  // =========================================================
+  // ユーティリティ
+  // =========================================================
+  const nowTime = () => {
+    const d = new Date();
+    return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}:${String(d.getSeconds()).padStart(2,"0")}`;
+  };
+
+  function escapeHtml(s){
+    return String(s)
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#39;");
+  }
+
+  function logSection(title){
+    const line = `\n========== ${title} (${nowTime()}) ==========\n`;
+    appendLog(line);
+  }
+
+  function log(msg){ appendLog(msg + "\n"); }
+
+  function appendLog(text){
+    logEl.textContent += text;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function clearLog(){ logEl.textContent = ""; }
+
+  function setLogMode(mode){
+    logMode = mode;
+    if (mode === "text"){
+      btnTabText.classList.add("active");
+      btnTabFlow.classList.remove("active");
+      logEl.classList.remove("viewHidden");
+      flowLogEl.classList.add("viewHidden");
+    } else {
+      btnTabText.classList.remove("active");
+      btnTabFlow.classList.add("active");
+      logEl.classList.add("viewHidden");
+      flowLogEl.classList.remove("viewHidden");
+    }
+  }
+
+  function pushFlowOp({type,title,summary,pid}){
+    const no = flowOps.length + 1;
+    const item = { no, type, title, summary, pid: pid||"", time: nowTime() };
+    flowOps.push(item);
+    renderFlowLog();
+  }
+
+  function clearFlowLog(){
+    flowOps = [];
+    renderFlowLog();
+  }
+
+  function renderFlowLog(){
+    if (!flowLogEl) return;
+    flowLogEl.innerHTML = flowOps.map(op => {
+      return `
+        <div class="flowItem" data-pid="${escapeHtml(op.pid)}" data-title="${escapeHtml(op.title)}" data-summary="${escapeHtml(op.summary||"")}">
+          <div class="flowHead">
+            <div style="display:flex; gap:10px; align-items:center;">
+              <span class="flowNo">#${op.no}</span>
+              <span class="flowType">${escapeHtml(op.type)}</span>
+            </div>
+            <span class="flowTime">${escapeHtml(op.time)}</span>
+          </div>
+          <div class="flowSummary">${escapeHtml(op.title)}</div>
+          ${op.pid ? `<div class="flowPid">PID: ${escapeHtml(op.pid)}</div>` : ``}
+        </div>
+      `;
+    }).join("");
+
+    flowLogEl.querySelectorAll(".flowItem").forEach(el=>{
+      el.addEventListener("click", ()=>{
+        const pid = el.getAttribute("data-pid") || "";
+        const title = el.getAttribute("data-title") || "";
+        const summary = el.getAttribute("data-summary") || "";
+        setImagePaneByPid(pid, title, summary);
+      });
+    });
+
+    flowLogEl.scrollTop = flowLogEl.scrollHeight;
+  }
+
+  function updateStat(){
+    const baseN = fcBase?.features?.length ?? 0;
+    const workN = fcWorking?.features?.length ?? 0;
+    const msg = `base:${baseN} / working:${workN} / files:${loadedFiles.length}`;
+    statEl.textContent = msg;
+    if (stat2El) stat2El.textContent = msg;
+    // マップ表示中のみ、軽量に更新
+    try{ refreshMap(); }catch(e){}
+  }
+
+  function normalizeStr(s, {trim=true, nfkc=true, ignorecase=true}={}){
+    if (s == null) return "";
+    let t = String(s);
+    if (trim) t = t.trim();
+    if (nfkc) t = t.normalize("NFKC");
+    if (ignorecase) t = t.toLowerCase();
+    return t;
+  }
+
+  function parseList(text){
+    if (!text) return [];
+    return text.split(/[\n,]/g).map(s=>s.trim()).filter(Boolean);
+  }
+
+  function basename(name){
+    const idx = name.lastIndexOf(".");
+    if (idx > 0) return name.slice(0, idx);
+    return name;
+  }
+
+  function readFileAsText(file){
+    return new Promise((resolve,reject)=>{
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = (e) => reject(e);
+      fr.readAsText(file, "utf-8");
+    });
+  }
+
+  function downloadText(filename, text){
+    const blob = new Blob([text], {type:"application/json;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportFC(fc, label){
+    const out = JSON.stringify(fc);
+    downloadText(`${label}.geojson`, out);
+  }
+
+  function exportWorking(){ if (fcWorking) exportFC(fcWorking, "working"); }
+  function exportMergedBase(){ if (fcBase) exportFC(fcBase, "merged_base"); }
+
+  function resetWorkingToBase(){
+    if (!fcBase) return;
+    fcWorking = structuredClone(fcBase);
+    workingOriginTags = baseOriginTags.slice();
+    updateStat();
+    log("working を base にリセットしました。");
+    valueCache.clear();
+    refreshKeyCandidates();
+    refreshAllSelectors();
+    refreshESelectors();
+  }
+
+  // =========================================================
+  // Key/Value候補の構築
+  // =========================================================
+  function collectKeysFromFC(fc, limitFeatures=5000){
+    const keys = new Set();
+    if (!fc?.features) return [];
+    const n = Math.min(fc.features.length, limitFeatures);
+    for (let i=0;i<n;i++){
+      const p = fc.features[i]?.properties;
+      if (p && typeof p === "object"){
+        Object.keys(p).forEach(k=>keys.add(k));
+      }
+    }
+    return Array.from(keys).sort();
+  }
+
+  // baseName から loadedFiles の FeatureCollection を取得
+  function getLoadedFCByBaseName(baseName){
+    const bn = (baseName||"").trim();
+    if (!bn) return null;
+    const f = loadedFiles.find(x => x.baseName === bn);
+    return f ? f.fc : null;
+  }
+
+
+
+  function collectValuesFromFC(fc, key, limitFeatures=20000){
+    const vals = new Set();
+    if (!fc?.features || !key) return [];
+    const n = Math.min(fc.features.length, limitFeatures);
+    for (let i=0;i<n;i++){
+      const p = fc.features[i]?.properties;
+      if (!p) continue;
+      const v = p[key];
+      if (v == null) continue;
+      vals.add(String(v));
+    }
+    return Array.from(vals).sort((a,b)=>a.localeCompare(b,"ja"));
+  }
+
+  function refreshKeyCandidates(){
+    lastKeys = collectKeysFromFC(fcWorking || fcBase, 5000);
+    keyListEl.innerHTML = lastKeys.map(k=>`<option value="${escapeHtml(k)}"></option>`).join("");
+
+    if (delKeySelEl){
+      const cur = ($("#delKey").value || "").trim() || (delKeySelEl.value || "").trim();
+      delKeySelEl.innerHTML =
+        `<option value="">（選択）</option>` +
+        lastKeys.map(k=>`<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`).join("");
+      if (cur && lastKeys.includes(cur)) delKeySelEl.value = cur;
+    }
+
+    refreshRefKeyCandidatesFromB();
+  }
+
+  function getOtherFileBaseNamesExcludingA(){
+    pullGroupStateFromUI();
+    const Aname = (groupState.A || "").trim();
+    return loadedFiles
+      .map(f => f.baseName)
+      .filter(bn => bn && bn !== Aname);
+  }
+
+  function buildFCForGroupByNames(baseNames){
+    const feats = [];
+    for (const bn of baseNames){
+      const f = loadedFiles.find(x=>x.baseName === bn || x.name === bn);
+      if (f?.fc?.features?.length){
+        feats.push(...f.fc.features);
+      }
+    }
+    return { type:"FeatureCollection", features: feats };
+  }
+
+  function refreshRefKeyCandidatesFromB(){
+    if (!refKeySelEl) return;
+
+    const bName = getSelectedBNameForA();
+    const others = bName ? [bName] : getOtherFileBaseNamesExcludingA();
+    let keys = [];
+    if (others.length > 0){
+      const fcO = buildFCForGroupByNames(others);
+      keys = collectKeysFromFC(fcO, 8000);
+    }
+    if (keys.length === 0){
+      keys = lastKeys.slice();
+    }
+
+    const current = ($("#refKey").value || "").trim() || (refKeySelEl.value || "").trim();
+    refKeySelEl.innerHTML =
+      `<option value="">（選択）</option>` +
+      keys.map(k=>`<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`).join("");
+    if (current && keys.includes(current)){
+      refKeySelEl.value = current;
+    } else {
+      refKeySelEl.value = "";
+    }
+
+    keyListEl.innerHTML = keys.map(k=>`<option value="${escapeHtml(k)}"></option>`).join("");
+  }
+
+  function refreshAllSelectors(){
+    lastKeys = collectKeysFromFC(fcWorking || fcBase, 5000);
+
+    if (delKeySelEl){
+      const cur = ($("#delKey").value || "").trim() || (delKeySelEl.value || "").trim();
+      delKeySelEl.innerHTML =
+        `<option value="">（選択）</option>` +
+        lastKeys.map(k=>`<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`).join("");
+      if (cur && lastKeys.includes(cur)) delKeySelEl.value = cur;
+    }
+
+    refreshOverlapBSelectOptions();
+
+    refreshRefKeyCandidatesFromB();
+      refreshPipSelectors();
+  }
+
+
+  // F: 点→面（ポイント in ポリゴン） 用セレクタ更新
+  function refreshPipSelectors(){
+    const targetSel = $("#pipTargetSelect");
+    const judgeSel  = $("#pipJudgeSelect");
+    const polyKeySel= $("#pipPolyKeySelect");
+    if (!targetSel || !judgeSel) return;
+
+    const names = loadedFiles.map(f=>f.baseName);
+    const curT = (targetSel.value || "").trim();
+    const curJ = (judgeSel.value || "").trim();
+
+    targetSel.innerHTML = `<option value="">（選択）</option>` + names.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+    judgeSel.innerHTML  = `<option value="">（選択）</option>` + names.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+
+    if (curT && names.includes(curT)) targetSel.value = curT;
+    if (curJ && names.includes(curJ)) judgeSel.value = curJ;
+
+    // ポリゴン側キー候補
+    if (polyKeySel){
+      const fcJudge = getLoadedFCByBaseName(judgeSel.value);
+      const keys = fcJudge ? collectKeysFromFC(fcJudge, 5000) : [];
+      const curK = (polyKeySel.value || "").trim();
+      polyKeySel.innerHTML = `<option value="">（選択）</option>` + keys.map(k=>`<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`).join("");
+      if (curK && keys.includes(curK)) polyKeySel.value = curK;
+    }
+  }
+
+
+  // A候補（refKeyの値）: A以外から候補値抽出
+  function renderAValueList(){
+    const k = ($("#refKey").value || "").trim();
+    if (!k){
+      valListEl.innerHTML = `<div class="small">refKey を入力すると候補が出ます</div>`;
+      valStatEl.textContent = "候補: -";
+      return;
+    }
+
+    const bName = getSelectedBNameForA();
+    const others = bName ? [bName] : getOtherFileBaseNamesExcludingA();
+    let fcSource = null;
+    if (others.length > 0){
+      fcSource = buildFCForGroupByNames(others);
+    } else {
+      fcSource = fcWorking || fcBase;
+    }
+
+    const cacheKey = `Avals::${others.join("|")}::${k}`;
+    let all = valueCache.get(cacheKey);
+    if (!all){
+      all = collectValuesFromFC(fcSource, k, 30000);
+      valueCache.set(cacheKey, all);
+    }
+
+    const q = (valSearchEl.value || "").trim().toLowerCase();
+    const shown = q ? all.filter(v=>v.toLowerCase().includes(q)) : all;
+    valStatEl.textContent = `候補: ${shown.length} / ${all.length}`;
+
+    const take = shown.slice(0, 500);
+    valListEl.innerHTML = take.map(v=>`
+      <div class="candItem" data-v="${escapeHtml(v)}" title="クリックで追加">
+        <div class="v">${escapeHtml(v)}</div>
+        <div class="add">＋追加</div>
+      </div>
+    `).join("") + (shown.length>500 ? `<div class="small" style="margin-top:6px;">表示は先頭500件まで（絞り込みで候補を減らしてください）</div>` : "");
+
+    valListEl.querySelectorAll(".candItem").forEach(el=>{
+      el.addEventListener("click", ()=>{
+        const v = el.getAttribute("data-v");
+        addValueToTextarea($("#refVals"), v);
+      });
+    });
+  }
+
+  // B候補（delKeyの値）
+  function renderBValueList(){
+    const k = ($("#delKey").value || "").trim();
+    if (!k){
+      delValListEl.innerHTML = `<div class="small">delKey を入力すると候補が出ます</div>`;
+      delValStatEl.textContent = "候補: -";
+      return;
+    }
+    const cacheKey = `Bvals::${k}`;
+    let all = valueCache.get(cacheKey);
+    if (!all){
+      all = collectValuesFromFC(fcWorking || fcBase, k, 30000);
+      valueCache.set(cacheKey, all);
+    }
+    const q = (delValSearchEl.value || "").trim().toLowerCase();
+    const shown = q ? all.filter(v=>v.toLowerCase().includes(q)) : all;
+    delValStatEl.textContent = `候補: ${shown.length} / ${all.length}`;
+
+    const take = shown.slice(0, 500);
+    delValListEl.innerHTML = take.map(v=>`
+      <div class="candItem" data-v="${escapeHtml(v)}" title="クリックで追加">
+        <div class="v">${escapeHtml(v)}</div>
+        <div class="add">＋追加</div>
+      </div>
+    `).join("") + (shown.length>500 ? `<div class="small" style="margin-top:6px;">表示は先頭500件まで（絞り込みで候補を減らしてください）</div>` : "");
+
+    delValListEl.querySelectorAll(".candItem").forEach(el=>{
+      el.addEventListener("click", ()=>{
+        const v = el.getAttribute("data-v");
+        addValueToTextarea($("#delVals"), v);
+      });
+    });
+  }
+
+  function addValueToTextarea(textarea, val){
+    if (!textarea) return;
+    const cur = textarea.value || "";
+    const list = parseList(cur);
+    if (!list.includes(val)) list.push(val);
+    textarea.value = list.join("\n");
+  }
+
+  function addAllShownToTextarea({textareaEl, listRootEl}){
+    const vals = [];
+    listRootEl.querySelectorAll(".candItem").forEach(el=>{
+      const v = el.getAttribute("data-v");
+      if (v) vals.push(v);
+    });
+    const cur = parseList(textareaEl.value || "");
+    for (const v of vals){
+      if (!cur.includes(v)) cur.push(v);
+    }
+    textareaEl.value = cur.join("\n");
+  }
+
+  // =========================================================
+  // A/B区分 UI
+  // =========================================================
+  function rebuildFileNameDatalist(){
+    if (!fileNameListEl) return;
+    fileNameListEl.innerHTML = loadedFiles.map(f=>`<option value="${escapeHtml(f.baseName)}"></option>`).join("");
+  }
+
+  function pullGroupStateFromUI(){
+    const A = (groupAEl?.value || "").trim();
+    const Bs = [];
+    groupBContainerEl?.querySelectorAll("input[data-b-index]").forEach(inp=>{
+      const v = (inp.value||"").trim();
+      if (v) Bs.push(v);
+    });
+    groupState = { A, Bs };
+  }
+
+
+  function getSelectedBNameForA(){
+    pullGroupStateFromUI();
+    const bs = (groupState.Bs || []).filter(Boolean);
+    const v = (overlapBSelectEl?.value || "").trim();
+    if (v && bs.includes(v)) return v;
+    // まだ選択がない / リスト外なら先頭
+    return bs.length ? bs[0] : "";
+  }
+
+  function refreshOverlapBSelectOptions(){
+    if (!overlapBSelectEl) return;
+    pullGroupStateFromUI();
+    const bs = (groupState.Bs || []).filter(Boolean);
+
+    const cur = (overlapBSelectEl.value || "").trim();
+    overlapBSelectEl.innerHTML =
+      (bs.length ? "" : `<option value="">（Bが未設定）</option>`) +
+      bs.map(b=>`<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join("");
+
+    const pick = (cur && bs.includes(cur)) ? cur : (bs[0] || "");
+    if (pick) overlapBSelectEl.value = pick;
+  }
+
+
+  function rebuildGroupBInputs(){
+    if (!groupBContainerEl) return;
+    const total = loadedFiles.length;
+    const desired = Math.max(0, total - 1);
+
+    const existing = Array.from(groupBContainerEl.querySelectorAll("input[data-b-index]"));
+    const curVals = existing.map(inp => (inp.value||"").trim());
+
+    const base = groupState.Bs.slice();
+    for (const v of curVals){
+      if (v && !base.includes(v)) base.push(v);
+    }
+
+    groupBContainerEl.innerHTML = "";
+    for (let i=0;i<desired;i++){
+      const v = base[i] || "";
+      const wrap = document.createElement("div");
+      wrap.style.marginTop = "8px";
+      wrap.innerHTML = `
+        <label>データB${i+1}</label>
+        <input type="text" data-b-index="${i}" list="fileNameList" placeholder="読み込み後に選択" value="${escapeHtml(v)}"/>
+      `;
+      groupBContainerEl.appendChild(wrap);
+    }
+
+    groupBContainerEl.querySelectorAll("input[data-b-index]").forEach(inp=>{
+      inp.addEventListener("change", ()=>{
+        pullGroupStateFromUI();
+        refreshAllSelectors();
+        renderAValueList();
+        refreshESelectors();
+        pushFlowOp({
+          type:"GROUP",
+          title:"データ区分を更新",
+          pid:"GROUP",
+          summary:`A=${groupState.A||"-"}\nB=${groupState.Bs.filter(Boolean).join(", ")||"-"}`
+        });
+      });
+    });
+  }
+
+  function autoAssignGroups(){
+    if (loadedFiles.length === 0){
+      log("WARN: 先にGeoJSONを読み込んでください。");
+      return;
+    }
+    const A = loadedFiles[0].baseName;
+    groupAEl.value = A;
+    rebuildGroupBInputs();
+    const desired = Math.max(0, loadedFiles.length - 1);
+    const inputs = Array.from(groupBContainerEl.querySelectorAll("input[data-b-index]"));
+    for (let i=0;i<desired;i++){
+      inputs[i].value = loadedFiles[i+1]?.baseName || "";
+    }
+    pullGroupStateFromUI();
+
+    refreshAllSelectors();
+    renderAValueList();
+    refreshESelectors();
+
+    log(`自動割当: A=${groupState.A} / B=${groupState.Bs.join(", ")}`);
+    pushFlowOp({
+      type:"GROUP",
+      title:"自動割当（A=先頭, B=残り）",
+      pid:"GROUP",
+      summary:`A=${groupState.A}\nB=${groupState.Bs.join(", ")||"-"}`
+    });
+  }
+
+  function clearGroups(){
+    groupAEl.value = "";
+    rebuildGroupBInputs();
+    pullGroupStateFromUI();
+
+    refreshAllSelectors();
+    renderAValueList();
+    refreshESelectors();
+
+    log("データ区分をクリアしました。");
+    pushFlowOp({ type:"GROUP", title:"区分クリア", pid:"GROUP", summary:"A/B を空にしました" });
+  }
+
+  // =========================================================
+  // 読み込み（統合）
+  // =========================================================
+  async function onLoadFiles(files){
+    logSection("読み込み開始");
+    const t0 = performance.now();
+    const ng = [];
+
+    loadedFiles = [];
+    fcBase = null;
+    fcWorking = null;
+    valueCache.clear();
+    baseOriginTags = [];
+    workingOriginTags = [];
+
+    let okCount = 0, errCount = 0;
+
+    for (let i=0;i<files.length;i++){
+      const f = files[i];
+      const kb = Math.round(f.size/1024);
+      log(`[#${i+1}/${files.length}] 読み込み中: ${f.name} (${kb} KB)`);
+      try{
+        const txt = await readFileAsText(f);
+        const json = JSON.parse(txt);
+        let fc = null;
+        if (json?.type === "FeatureCollection") fc = json;
+        else if (json?.type === "Feature") fc = { type:"FeatureCollection", features:[json] };
+        else if (Array.isArray(json)) fc = { type:"FeatureCollection", features:json };
+        else throw new Error("GeoJSON形式を判定できません（FeatureCollection/Feature/配列ではない）");
+
+        const baseName = ($("#srcMode").value === "filename") ? f.name : basename(f.name);
+        // --- 読み込み時：出典キー（例:_src）を各ファイルの全featureに付与（上書き） ---
+        const srcKeyNow = ($("#srcKey").value || "").trim();
+        const injectNow = $("#srcInject")?.checked;
+        const modeNow = ($("#srcMode").value || "basename");
+        const srcValNow = (modeNow === "filename") ? f.name : basename(f.name);
+
+        if (injectNow && srcKeyNow){
+          for (const feat of (fc.features || [])){
+            feat.properties = feat.properties || {};
+            feat.properties[srcKeyNow] = srcValNow; // 上書き
+          }
+        }
+
+        loadedFiles.push({ name:f.name, baseName, size:f.size, fc, featuresCount: fc.features?.length||0 });
+        okCount++;
+        log(`  -> OK: features=${fc.features?.length||0}`);
+      }catch(e){
+        ng.push({name:f.name, err:String(e)});
+        errCount++;
+        log(`  -> ERROR: ${String(e)}`);
+      }
+      if (stat2El) stat2El.textContent = `読込中: ${i+1}/${files.length} (OK=${okCount}, ERR=${errCount})`;
+    }
+
+    const srcKey = ($("#srcKey").value || "").trim();
+    const mode = ($("#srcMode").value || "basename");
+    const merged = { type:"FeatureCollection", features:[] };
+
+    for (const item of loadedFiles){
+      const srcVal = (mode === "filename") ? item.name : item.baseName;
+      for (const feat of (item.fc.features || [])){
+        const nf = structuredClone(feat);
+        if (srcKey){
+          nf.properties = nf.properties || {};
+          nf.properties[srcKey] = srcVal; // 上書き
+        }
+        merged.features.push(nf);
+        baseOriginTags.push(item.baseName);
+      }
+    }
+
+    fcBase = merged;
+    fcWorking = structuredClone(merged);
+    workingOriginTags = baseOriginTags.slice();
+
+    const t1 = performance.now();
+    updateStat();
+
+    rebuildFileNameDatalist();
+    rebuildGroupBInputs();
+    pullGroupStateFromUI();
+
+    refreshKeyCandidates();
+    refreshAllSelectors();
+    refreshESelectors();
+
+    log(`\n読み込み結果: OK=${okCount}, ERROR=${ng.length}`);
+    if (ng.length){
+      log("ERROR一覧:");
+      ng.forEach(x=>log(`  - ${x.name}: ${x.err}`));
+    }
+    log(`統合完了: merged features=${merged.features.length}`);
+    log(`所要時間: ${(t1-t0).toFixed(0)} ms`);
+
+    const keys = collectKeysFromFC(merged, 5000);
+    log(`検出キー数: ${keys.length}`);
+    log(`先頭キー: ${keys.slice(0,30).join(", ")}${keys.length>30?" ...":""}`);
+
+    pushFlowOp({ type:"LOAD", title:"GeoJSON読み込み/統合", pid:"LOAD", summary:`files=${loadedFiles.length}\nmerged features=${merged.features.length}\nkeys=${keys.length}` });
+    setImagePaneByPid("LOAD", "読み込み/統合", `files=${loadedFiles.length}\nmerged=${merged.features.length}`);
+  }
+
+  // =========================================================
+  // A: 重複フラグ付与（Aのみ更新）
+  // =========================================================
+  function ensureA(){
+    if (!fcWorking){ log("WARN: 先にGeoJSONを読み込んでください。"); return false; }
+    const refKey = ($("#refKey").value || "").trim();
+    const refValues = parseList($("#refVals").value || "");
+    const outKey = ($("#outKey").value || "").trim();
+
+    // ★運用拡張：
+    // refValsが空なら「Bグループの全featureを判定素材として使う」＝レイヤ重複判定モード
+    // refValsがある場合は従来どおり refKey/refVals でBを抽出する
+    if (refValues.length>0 && !refKey){
+      log("WARN: 基準抽出値（refVals）が入力されていますが、基準抽出キー（refKey）が空です");
+      return false;
+    }
+    if (!outKey){ log("WARN: 付与する新キー名（outKey）が空です"); return false; }
+    return true;
+  }
+
+  function buildOptionsA(){
+    const refKey = ($("#refKey").value || "").trim();
+    const refValues = parseList($("#refVals").value || "");
+    const outKey = ($("#outKey").value || "").trim();
+    const method = ($("#method").value || "intersects");
+    const trim = $("#trim").checked;
+    const nfkc = $("#nfkc").checked;
+    const ignorecase = $("#ignorecase").checked;
+
+    const fullTreatThreshold = Number((($("#fullTreatThreshold").value || "0.95") + "").trim());
+    const overlapAreaKey = (($("#overlapAreaKey").value || "") + "").trim();
+    const overlapAreaDecimals = Number((($("#overlapAreaDecimals").value || "0") + "").trim());
+    const enableOverlapArea = ($("#enableOverlapArea")?.checked === true);
+
+
+    const bPick = getSelectedBNameForA();
+    const exportApproxOverlapPolys = ($("#exportApproxOverlapPolys")?.checked === true);
+
+    return { refKey, refValues, outKey, method, trim, nfkc, ignorecase, fullTreatThreshold, overlapAreaKey, overlapAreaDecimals, enableOverlapArea, bPick, exportApproxOverlapPolys };
+  }
+
+  function getGroupFeaturesB(){
+    // 重複判定素材：B1〜から選択した「1つのB」だけを使用する
+    pullGroupStateFromUI();
+    const bName = getSelectedBNameForA();
+    const srcKey = ($("#srcKey").value || "").trim() || "_src";
+
+    if (bName){
+      // ① まずは読み込みファイル（loadedFiles）から取得
+      const f = loadedFiles.find(x=>x.baseName === bName || x.name === bName);
+      if (f?.fc?.features?.length) return structuredClone(f.fc.features);
+
+      // ② 見つからない場合：working内の properties[srcKey] で抽出（_src注入運用を優先）
+      const featsW = (fcWorking?.features) || [];
+      const picked = featsW.filter(ft=>{
+        const v = ft?.properties?.[srcKey];
+        return v!=null && String(v).trim() === bName;
+      });
+      if (picked.length){
+        log(`INFO: B(${bName}) は loadedFiles では見つからず、workingの properties[${srcKey}] で抽出しました（count=${picked.length}）。`);
+        return structuredClone(picked);
+      }
+
+      log(`WARN: B(${bName}) のfeatureが見つかりませんでした（loadedFiles / working properties[${srcKey}] とも不一致）。B=0件で判定します。`);
+      return [];
+    }
+
+    // B未設定の場合は、従前の保険：working全体を使う
+    return structuredClone((fcWorking?.features) || (fcBase?.features) || []);
+  }
+
+
+
+  function getWorkingAIndices(){
+    pullGroupStateFromUI();
+    const Aname = (groupState.A || "").trim();
+    const feats = (fcWorking?.features) || [];
+    if (!Aname) {
+      return Array.from({length: feats.length}, (_,i)=>i);
+    }
+
+    // ① originTags（高速）
+    const idxs = [];
+    for (let i=0;i<workingOriginTags.length && i<feats.length;i++){
+      if (workingOriginTags[i] === Aname) idxs.push(i);
+    }
+    if (idxs.length) return idxs;
+
+    // ② properties[srcKey] で再判定（_src注入運用）
+    const srcKey = ($("#srcKey").value || "").trim() || "_src";
+    const idxs2 = [];
+    for (let i=0;i<feats.length;i++){
+      const v = feats[i]?.properties?.[srcKey];
+      if (v!=null && String(v).trim() === Aname) idxs2.push(i);
+    }
+    if (idxs2.length){
+      log(`INFO: A判定は originTags では一致せず、properties[${srcKey}] で特定しました（A=${Aname}, count=${idxs2.length}）。`);
+      return idxs2;
+    }
+
+    // ③ フォールバック
+    log(`WARN: A設定（${Aname}）に一致するfeatureが見つかりませんでした。A=全件として処理します（originTags / properties[${srcKey}] とも不一致）。`);
+    return Array.from({length: feats.length}, (_,i)=>i);
+  }
+
+
+
+  function previewA(){
+    if (!ensureA()) return;
+    const opt = buildOptionsA();
+
+    const idxA = getWorkingAIndices();
+    const totalA = idxA.length;
+    progressAReset(totalA);
+    progressAUpdate(0, totalA, "準備");
+    const featsB = getGroupFeaturesB();
+    log(`A設定: refKey=${opt.refKey}, outKey=${opt.outKey}, values=${opt.refValues.length}, method=${opt.method}`);
+    log(`スコープ: 書き込み対象A(indices)=${idxA.length} / 判定素材B(features)=${featsB.length}`);
+
+    let bases = [];
+    if (!opt.refValues || opt.refValues.length===0){
+      bases = featsB; // ★レイヤ重複判定モード：Bグループ全件
+    }else{
+      const setVals = new Set(opt.refValues.map(v=>normalizeStr(v,opt)));
+      bases = featsB.filter(ft=>{
+        const v = ft?.properties?.[opt.refKey];
+        if (v==null) return false;
+        const nv = normalizeStr(v,opt);
+        return setVals.has(nv);
+      });
+    }
+    log(`基準抽出: ${(!opt.refValues||opt.refValues.length===0)?"(refVals空=全件使用)":"B内で一致"}=${bases.length}`);
+
+    let hit=0, miss=0;
+    for (let ai=0; ai<idxA.length; ai++){
+      if (cancelApplyA){
+        progressAFinish("キャンセルしました（反映なし）", 0);
+        log("INFO: A適用をキャンセルしました（反映なし）。");
+        return null;
+      }
+      const i = idxA[ai];
+
+      const fa = fcWorking.features[i];
+      if (!fa?.geometry){ miss++; continue; }
+      let ok = false;
+      for (const fb of bases){
+        if (!fb?.geometry) continue;
+        try{
+          if (opt.method === "overlaps"){
+            ok = turf.booleanOverlap(fa, fb) || turf.booleanContains(fa, fb) || turf.booleanContains(fb, fa);
+          } else {
+            ok = turf.booleanIntersects(fa, fb);
+          }
+          if (ok) break;
+        }catch(e){}
+      }
+      if (ok) hit++; else miss++;
+    }
+    log(`判定結果（A側）: hit=${hit}, miss=${miss}`);
+  }
+
+    async function applyA(applyToWorking){
+    if (!ensureA()) return null;
+    const opt = buildOptionsA();
+    const featsB = getGroupFeaturesB();
+
+    // 判定素材Bの抽出
+    let bases = [];
+    if (!opt.refValues || opt.refValues.length===0){
+      bases = featsB; // ★レイヤ重複判定モード：Bグループ全件
+    }else{
+      const setVals = new Set(opt.refValues.map(v=>normalizeStr(v,opt)));
+      bases = featsB.filter(ft=>{
+        const v = ft?.properties?.[opt.refKey];
+        if (v==null) return false;
+        const nv = normalizeStr(v,opt);
+        return setVals.has(nv);
+      });
+    }
+    log(`A適用: 判定素材B ${(!opt.refValues||opt.refValues.length===0)?"(refVals空=全件使用)":"一致"}=${bases.length}`);
+
+    // 対象Aの決定
+    const idxA = getWorkingAIndices();
+    log(`A適用: 書き込み対象A(indices)=${idxA.length} / 判定素材B(features)=${featsB.length}`);
+
+    // 進捗初期化（キャンセルフラグもここで確実にリセット）
+    progressAReset(idxA.length);
+
+    // ★安全のため、常に out へ反映してから commit（途中キャンセルでworkingが壊れない）
+    const out = structuredClone(fcWorking);
+    const target = out;
+
+    let c0=0, c1=0, c2=0, cNoGeom=0, cErr=0;
+    const hasPolyBase = bases.some(b=>b?.geometry && isPolygonLike(b));
+
+    const pow10 = (n)=>Math.pow(10, n);
+    const roundN = (v, dec)=>{
+      if (!Number.isFinite(v)) return v;
+      const p = pow10(dec);
+      return Math.round(v * p) / p;
+    };
+
+    // 近似重複面積（intersectが取れないケース向け）
+    // Aポリゴン内を格子サンプリングし、「B内に入る割合 × area(A)」で近似する
+    // bPolys: Polygon/MultiPolygon の Feature 配列（Polygon以外は渡さない）
+    const approxOverlapAreaBySampling = (faPoly, bPolys, maxSamples=600)=>{
+      try{
+        const aArea = turf.area(faPoly);
+        if (!(aArea > 0)) return 0;
+        if (!bPolys || bPolys.length === 0) return 0;
+
+        const bb = turf.bbox(faPoly); // [minX,minY,maxX,maxY]
+        const w = bb[2] - bb[0], h = bb[3] - bb[1];
+        if (!(w > 0) || !(h > 0)) return 0;
+
+        // ストラタム（格子）サンプリング：同じmaxSamplesでも偏りが出にくい
+        const aspect = w / h;
+        const base = Math.max(10, Math.min(120, Math.ceil(Math.sqrt(maxSamples))));
+        const nx = Math.max(10, Math.min(160, Math.ceil(base * Math.sqrt(aspect))));
+        const ny = Math.max(10, Math.min(160, Math.ceil(base / Math.sqrt(aspect))));
+        const dx = w / nx, dy = h / ny;
+
+        let inA = 0, inAB = 0;
+
+        // セルごとに1点ずつ（ランダム）取り、A内の点が maxSamples に達したら打ち切り
+        for (let iy=0; iy<ny; iy++){
+          const y0 = bb[1] + iy * dy;
+          for (let ix=0; ix<nx; ix++){
+            const x0 = bb[0] + ix * dx;
+
+            const x = x0 + Math.random() * dx;
+            const y = y0 + Math.random() * dy;
+            const pt = { type:"Feature", properties:{}, geometry:{ type:"Point", coordinates:[x,y] } };
+
+            let insideA = false;
+            try{ insideA = turf.booleanPointInPolygon(pt, faPoly); }catch(e){ insideA = false; }
+            if (!insideA) continue;
+
+            inA++;
+
+            let insideB = false;
+            for (const fb of bPolys){
+              if (!fb?.geometry) continue;
+              try{
+                if (turf.booleanPointInPolygon(pt, fb)) { insideB = true; break; }
+              }catch(e){ /* ignore */ }
+            }
+            if (insideB) inAB++;
+
+            if (inA >= maxSamples) break;
+          }
+          if (inA >= maxSamples) break;
+        }
+
+        if (inA <= 0) return 0;
+        const ratio = inAB / inA;
+        if (!(ratio > 0)) return 0;
+        return aArea * ratio;
+      }catch(e){
+        return 0;
+      }
+    }
+
+    // 近似重複ポリゴン（部分重複の可視化用）
+    // Aポリゴン内を格子サンプリングし、「A内かつB内」の点群から凸包ポリゴンを作る（取れない場合はnull）
+    const approxOverlapPolyBySampling = (faPoly, bPolys, maxSamples=1200)=>{
+      try{
+        if (!bPolys || bPolys.length === 0) return null;
+
+        const bb = turf.bbox(faPoly); // [minX,minY,maxX,maxY]
+        const w = bb[2] - bb[0], h = bb[3] - bb[1];
+        if (!(w > 0) || !(h > 0)) return null;
+
+        // ストラタム（格子）サンプリング：同じmaxSamplesでも重複点群が安定
+        const aspect = w / h;
+        const base = Math.max(10, Math.min(160, Math.ceil(Math.sqrt(maxSamples))));
+        const nx = Math.max(10, Math.min(220, Math.ceil(base * Math.sqrt(aspect))));
+        const ny = Math.max(10, Math.min(220, Math.ceil(base / Math.sqrt(aspect))));
+        const dx = w / nx, dy = h / ny;
+
+        const pts = [];
+        let inA = 0;
+
+        for (let iy=0; iy<ny; iy++){
+          const y0 = bb[1] + iy * dy;
+          for (let ix=0; ix<nx; ix++){
+            const x0 = bb[0] + ix * dx;
+
+            const x = x0 + Math.random() * dx;
+            const y = y0 + Math.random() * dy;
+            const p = turf.point([x,y]);
+
+            let inAok = false;
+            try{ inAok = turf.booleanPointInPolygon(p, faPoly); }catch(e){ inAok = false; }
+            if (!inAok) continue;
+
+            inA++;
+            let inB = false;
+            for (const fb of bPolys){
+              try{
+                if (turf.booleanPointInPolygon(p, fb)) { inB = true; break; }
+              }catch(e){ /* ignore */ }
+            }
+            if (inB) pts.push(p);
+
+            if (inA >= maxSamples) break;
+          }
+          if (inA >= maxSamples) break;
+        }
+
+        if (pts.length < 3) return null;
+        const fcPts = turf.featureCollection(pts);
+
+        // 1) 可能なら凹包（concave）で形を追従（失敗時は凸包へ）
+        let hull = null;
+        try{
+          if (turf.concave){
+            // bboxの対角距離からスケールを推定し、maxEdgeを決める（大きすぎると凸包に近づく）
+            const c1 = [bb[0], bb[1]];
+            const c2 = [bb[2], bb[3]];
+            let diagKm = 1;
+            try{ diagKm = turf.distance(turf.point(c1), turf.point(c2), {units:"kilometers"}); }catch(e){ diagKm = 1; }
+            const maxEdge = Math.max(0.02, diagKm / 12); // 目安（必要以上に細かくしない）
+            hull = turf.concave(fcPts, { maxEdge, units:"kilometers" });
+          }
+        }catch(e){ hull = null; }
+
+        if (!hull || !hull.geometry){
+          try{ hull = turf.convex(fcPts); }catch(e){ hull = null; }
+        }
+        if (!hull || !hull.geometry) return null;
+
+        // 2) Aとの交差を軽く取って、はみ出しを抑える（失敗したらhullのまま）
+        try{
+          const inter = turf.intersect(hull, faPoly);
+          if (inter && inter.geometry) return inter;
+        }catch(e){ /* ignore */ }
+
+        return hull;
+      }catch(e){
+        return null;
+      }
+    };
+
+;
+
+
+    let done = 0;
+    const CHUNK = 25;
+
+    // ★オプション：部分重複(2)の重複領域ポリゴンを別ファイルで出力
+    const approxOut = (opt.exportApproxOverlapPolys === true) ? { type:"FeatureCollection", features: [] } : null;
+
+    for (const i of idxA){
+      if (cancelApplyA){
+        progressAFinish("キャンセルしました（反映なし）", idxA.length);
+        log("INFO: A適用はキャンセルされました。workingへの反映は行いません。");
+        return null;
+      }
+
+      const fa = target.features[i];
+      if (!fa?.geometry){ cNoGeom++; done++; continue; }
+      if (!fa.properties) fa.properties = {};
+
+      let flag = 0;
+      let overlapArea = null;
+      let interGeoms = (approxOut ? [] : null);
+      let usedApprox = false;
+
+      try{
+        // Polygon系は面積判定（0/1/2 + overlapArea）
+        if (isPolygonLike(fa) && hasPolyBase){
+          overlapArea = 0;
+          let okPoly = false;
+          for (const fb of bases){
+            if (!fb?.geometry) continue;
+            if (!isPolygonLike(fb)) continue;
+
+            // 先に intersects をかけて、intersect計算を減らす（軽量化）
+            let may = false;
+            try{ may = turf.booleanIntersects(fa, fb); }catch(e){ may = true; } // 失敗時は保守的に計算へ
+            if (!may) continue;
+            okPoly = true;
+
+            okPoly = true;
+
+            // intersectは実務データだとnull/例外になりやすいので、
+            // Polygon/MultiPolygonをPolygon片に分解して面積を安定計算する
+            const toPolyPieces = (ft)=>{ 
+              if (!ft?.geometry) return [];
+              const g0 = ft.geometry;
+
+              // 1) Polygon / MultiPolygon を Polygon片に分解
+              let polys = [];
+              if (g0.type === "Polygon"){
+                polys = [ { type:"Polygon", coordinates: g0.coordinates } ];
+              }else if (g0.type === "MultiPolygon"){
+                polys = (g0.coordinates||[]).map(coords=>({ type:"Polygon", coordinates: coords }));
+              }else{
+                return [];
+              }
+
+              // 2) 軽い整形（cleanCoords / rewind）＋ 自己交差の解消（unkinkPolygonがあれば）
+              const out = [];
+              const pushPoly = (polyGeom)=>{
+                const f = { type:"Feature", properties: {}, geometry: polyGeom };
+                let f2 = f;
+                // cleanCoordsがあれば軽く整形（余計な点の削減）
+                try{ if (turf.cleanCoords) f2 = turf.cleanCoords(f2); }catch(e){ /* ignore */ }
+                // rewindがあればリング方向を補正（intersectの安定性向上）
+                try{ if (turf.rewind) f2 = turf.rewind(f2, { reverse:false, mutate:false }); }catch(e){ /* ignore */ }
+
+                // unkinkPolygon が使える場合は自己交差を解消してPolygon群に分割
+                try{
+                  if (turf.unkinkPolygon){
+                    const fc = turf.unkinkPolygon(f2);
+                    if (fc && fc.type === "FeatureCollection" && Array.isArray(fc.features) && fc.features.length){
+                      for (const f3 of fc.features){
+                        if (f3?.geometry?.type === "Polygon"){
+                          let f4 = f3;
+                          try{ if (turf.cleanCoords) f4 = turf.cleanCoords(f4); }catch(e){ /* ignore */ }
+                          try{ if (turf.rewind) f4 = turf.rewind(f4, { reverse:false, mutate:false }); }catch(e){ /* ignore */ }
+                          out.push({ type:"Feature", properties:{}, geometry: f4.geometry });
+                        }
+                      }
+                      return;
+                    }
+                  }
+                }catch(e){ /* ignore */ }
+
+                // unkinkできない / できても空の場合はそのまま採用
+                if (f2?.geometry?.type === "Polygon"){
+                  out.push({ type:"Feature", properties:{}, geometry: f2.geometry });
+                }
+              };
+
+              for (const pg of polys) pushPoly(pg);
+              return out;
+            };
+
+            // fa片はキャッシュ（A側同一featureで繰返すため）
+            if (!fa.__polyPieces) {
+              try{ Object.defineProperty(fa, "__polyPieces", { value: toPolyPieces(fa), enumerable:false }); }
+              catch(e){ fa.__polyPieces = toPolyPieces(fa); }
+            }
+            const faPieces = fa.__polyPieces || toPolyPieces(fa);
+            const fbPieces = toPolyPieces(fb);
+
+            for (const pa of faPieces){
+              for (const pb of fbPieces){
+                let inter = null;
+                try{ inter = turf.intersect(pa, pb); }catch(e){ inter = null; }
+                if (inter){
+                  try{ overlapArea += turf.area(inter); }catch(e){ cErr++; }
+                  if (interGeoms) interGeoms.push(inter.geometry);
+                }
+              }
+            }
+          }
+
+          if (okPoly){
+            flag = 2; // 先に重なりありを確定（後段の面積計算で失敗しても0に落とさない）
+            // okPoly=true なら「重なりあり」。面積が0でも（接触のみ/交差面が作れない等）flagは0にしない。
+            // 面積が取れない場合でも「完全包含」を判定できれば面積=area(A)として扱う
+            if (overlapArea <= 0){
+              let fullIn = false;
+              try{
+                for (const fb of bases){
+                  if (!fb?.geometry) continue;
+                  if (!isPolygonLike(fb)) continue;
+                  if (turf.booleanWithin(fa, fb) || turf.booleanContains(fb, fa)) { fullIn = true; break; }
+                }
+              }catch(e){ /* ignore */ }
+              if (fullIn){
+                try{ overlapArea = turf.area(fa); }catch(e){ /* ignore */ }
+                flag = 1;
+              } else {
+                // 部分重複：intersectが取れず overlapArea が 0 の場合は近似で面積を推定
+                if (!(overlapArea > 0)){
+                  let approx = 0;
+                  try{
+                    const bPolys = bases.filter(b=>b?.geometry && isPolygonLike(b));
+                    approx = approxOverlapAreaBySampling(fa, bPolys, 600);
+                  }catch(e){ approx = 0; }
+                  if (approx > 0){
+                    usedApprox = true;
+                    overlapArea = approx;
+                    let ratio = 1;
+                    try{
+                      const aA = turf.area(fa);
+                      ratio = (aA > 0) ? (overlapArea / aA) : 1;
+                    }catch(e){ /* ignore */ }
+                    flag = (ratio >= opt.fullTreatThreshold) ? 1 : 2;
+                  } else {
+                    flag = 2;
+                  }
+                } else {
+                  flag = 2;
+                }
+              }
+            } else {
+
+            let ratio = 1;
+            try{
+              const aA = turf.area(fa);
+              ratio = (aA > 0) ? (overlapArea / aA) : 1;
+            }catch(e){ cErr++; }
+            flag = (ratio >= opt.fullTreatThreshold) ? 1 : 2;
+            }
+          }else{
+            flag = 0;
+          }
+
+          if (opt.enableOverlapArea && opt.overlapAreaKey){
+            fa.properties[opt.overlapAreaKey] = roundN(overlapArea, opt.overlapAreaDecimals);
+          }
+        }else{
+          // 非Polygonは従来どおり boolean で 0/1
+          let ok = false;
+          for (const fb of bases){
+            if (!fb?.geometry) continue;
+            try{
+              if (opt.method === "overlaps"){
+                ok = turf.booleanOverlap(fa, fb) || turf.booleanContains(fa, fb) || turf.booleanContains(fb, fa);
+              } else {
+                ok = turf.booleanIntersects(fa, fb);
+              }
+              if (ok) break;
+            }catch(e){ cErr++; }
+          }
+          flag = ok ? 1 : 0;
+
+          if (opt.enableOverlapArea && opt.overlapAreaKey){
+            fa.properties[opt.overlapAreaKey] = null;
+          }
+        }
+      }catch(e){
+        cErr++;
+        // 面積計算等で例外が出ても、重複判定（intersects）自体は可能なことが多い。
+        // ここで0に落とさず、最後の手段として軽量なintersects判定でflagを決める。
+        if (flag === 0){
+          let okFallback = false;
+          try{
+            for (const fb of bases){
+              if (!fb?.geometry) continue;
+              try{
+                okFallback = turf.booleanIntersects(fa, fb);
+                if (okFallback) break;
+              }catch(_e){}
+            }
+          }catch(_e){}
+          flag = okFallback ? 2 : 0;
+        }
+        // 面積キーは、取れない場合は0を入れる（nullだと後段が扱いづらい）
+        if (opt.enableOverlapArea && opt.overlapAreaKey){
+          if (fa.properties[opt.overlapAreaKey] == null) fa.properties[opt.overlapAreaKey] = 0;
+        }
+      }
+
+      // ★部分重複ポリゴンの別出力（UIチェック時のみ）
+      if (approxOut && flag===2 && isPolygonLike(fa) && hasPolyBase){
+        try{
+          let geomOut = null;
+
+          // 1) intersect由来のgeometryが取れていれば、それらを MultiPolygon でまとめる（溶解はしない）
+          if (interGeoms && interGeoms.length > 0){
+            const polys = [];
+            for (const g of interGeoms){
+              if (!g) continue;
+              if (g.type === "Polygon") polys.push(g.coordinates);
+              else if (g.type === "MultiPolygon") polys.push(...g.coordinates);
+            }
+            if (polys.length === 1){
+              geomOut = { type:"Polygon", coordinates: polys[0] };
+            }else if (polys.length > 1){
+              geomOut = { type:"MultiPolygon", coordinates: polys };
+            }
+          }
+
+          // 2) intersectが取れないケースは、サンプリング近似で凸包ポリゴンを作る
+          if (!geomOut && usedApprox){
+            const bPolys = bases.filter(b=>b?.geometry && isPolygonLike(b));
+            const hull = approxOverlapPolyBySampling(fa, bPolys, 1200);
+            if (hull && hull.geometry) geomOut = hull.geometry;
+          }
+
+          if (geomOut){
+            const props = {
+              a_index: i,
+              b_pick: opt.bPick || "",
+              outKey: opt.outKey || "",
+              flag: 2
+            };
+            if (opt.overlapAreaKey) props[opt.overlapAreaKey] = (fa.properties ? fa.properties[opt.overlapAreaKey] : null);
+            approxOut.features.push({ type:"Feature", properties: props, geometry: geomOut });
+          }
+        }catch(e){ /* ignore */ }
+      }
+
+      fa.properties[opt.outKey] = flag;
+      if (flag===0) c0++; else if (flag===1) c1++; else c2++;
+
+      done++;
+      if ((done % CHUNK)===0){
+        progressAUpdate(done, idxA.length, "A適用");
+        // UIへ制御を返す
+        await new Promise(r=>setTimeout(r, 0));
+      }else{
+        progressAUpdate(done, idxA.length, "A適用");
+      }
+    }
+
+    progressAFinish("完了", idxA.length);
+
+    log(`付与結果（A側）: 0=${c0}, 1=${c1}, 2=${c2}, noGeom=${cNoGeom}, err=${cErr} / outKey=${opt.outKey}${(opt.enableOverlapArea && opt.overlapAreaKey)?` / areaKey=${opt.overlapAreaKey}`:""}`);
+
+    // ★別出力：部分重複(2)の重複領域ポリゴン（近似）をGeoJSONとして保存
+    if (approxOut && approxOut.features && approxOut.features.length > 0){
+      try{
+        const ts = (()=>{ 
+          const d = new Date();
+          const pad=(n)=>String(n).padStart(2,"0");
+          return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+        })();
+        const safe = (s)=>String(s||"").replace(/[\\/:*?"<>|]+/g,"_").replace(/\s+/g,"_").slice(0,80);
+        const base = safe(opt.bPick || "B");
+        downloadText(`approx_overlap_polys_${base}_${ts}.geojson`, JSON.stringify(approxOut));
+        log(`INFO: 近似重複ポリゴンを別GeoJSONで出力: approx_overlap_polys_${base}_${ts}.geojson (features=${approxOut.features.length})`);
+      }catch(e){
+        log("WARN: 近似重複ポリゴンの別出力に失敗しました: " + e);
+      }
+    }
+
+
+    if (applyToWorking){
+      fcWorking = out;
+      // workingOriginTags は「由来」なのでそのまま（feature数が一致する前提）
+      valueCache.clear();
+      refreshKeyCandidates();
+      refreshAllSelectors();
+      refreshESelectors();
+      updateStat();
+      log("Aをworkingへ反映しました（A由来featureのみ更新）。");
+      return out;
+    }
+    return out;
+  }
+
+  // =========================================================
+  // B: 条件削除（working全体、originTagsも同期）
+  // =========================================================
+  function ensureB(){
+    if (!fcWorking){ log("WARN: 先にGeoJSONを読み込んでください。"); return false; }
+    const delKey = ($("#delKey").value || "").trim();
+    const delValues = parseList($("#delVals").value || "");
+    if (!delKey){ log("WARN: 削除対象キー（delKey）が空です"); return false; }
+    if (delValues.length===0){ log("WARN: 削除対象値（delVals）が空です"); return false; }
+    return true;
+  }
+
+  function previewB(){
+    if (!ensureB()) return;
+    const delKey = ($("#delKey").value || "").trim();
+    const vals = parseList($("#delVals").value || "");
+    const set = new Set(vals.map(v=>String(v)));
+
+    let willRemove=0;
+    for (const ft of (fcWorking.features||[])){
+      const v = ft?.properties?.[delKey];
+      if (v == null) continue;
+      if (set.has(String(v))) willRemove++;
+    }
+    log(`Bプレビュー: delKey=${delKey}, values=${vals.length}, remove=${willRemove}, remain=${(fcWorking.features||[]).length - willRemove}`);
+  }
+
+  function applyB(applyToWorking){
+    if (!ensureB()) return null;
+    const delKey = ($("#delKey").value || "").trim();
+    const vals = parseList($("#delVals").value || "");
+    const set = new Set(vals.map(v=>String(v)));
+
+    const out = { type:"FeatureCollection", features:[] };
+    const outTags = [];
+    let removed=0;
+
+    for (let i=0;i<(fcWorking.features||[]).length;i++){
+      const ft = fcWorking.features[i];
+      const v = ft?.properties?.[delKey];
+      if (v!=null && set.has(String(v))){
+        removed++;
+      } else {
+        out.features.push(structuredClone(ft));
+        outTags.push(workingOriginTags[i]);
+      }
+    }
+    log(`B削除: removed=${removed}, remain=${out.features.length}`);
+
+    if (applyToWorking){
+      fcWorking = structuredClone(out);
+      workingOriginTags = outTags;
+      valueCache.clear();
+      refreshKeyCandidates();
+      refreshAllSelectors();
+      refreshESelectors();
+      updateStat();
+      log("Bをworkingへ反映しました。");
+    }
+    return out;
+  }
+
+  // =========================================================
+  // C: 連番付与（working全体）
+  // =========================================================
+  function ensureC(){
+    if (!fcWorking){ log("WARN: 先にGeoJSONを読み込んでください。"); return false; }
+    const key = ($("#numKey").value || "").trim();
+    if (!key){ log("WARN: 付与キー名が空です"); return false; }
+    const start = Number($("#numStart").value || "1");
+    if (!Number.isFinite(start)){ log("WARN: 開始番号が数値ではありません"); return false; }
+    return true;
+  }
+
+  function previewC(){
+    if (!ensureC()) return;
+    const key = ($("#numKey").value || "").trim();
+    const start = Number($("#numStart").value || "1");
+    const prefix = ($("#numPrefix").value || "").trim();
+    const pad = ($("#numPad").value || "").trim();
+    log(`C設定: key=${key}, start=${start}, prefix=${prefix||"(なし)"}, pad=${pad||"(なし)"}`);
+  }
+
+  function applyC(applyToWorking){
+    if (!ensureC()) return null;
+    const key = ($("#numKey").value || "").trim();
+    const start = Number($("#numStart").value || "1");
+    const prefix = ($("#numPrefix").value || "").trim();
+    const pad = ($("#numPad").value || "").trim();
+    const padN = pad ? Number(pad) : 0;
+
+    const out = structuredClone(fcWorking);
+    let n = start;
+    for (const ft of (out.features||[])){
+      ft.properties = ft.properties || {};
+      let numStr = String(n);
+      if (padN>0) numStr = numStr.padStart(padN, "0");
+      ft.properties[key] = prefix + numStr;
+      n++;
+    }
+    log(`C付与: key=${key}, count=${out.features?.length||0}`);
+
+    if (applyToWorking){
+      fcWorking = structuredClone(out);
+      valueCache.clear();
+      refreshKeyCandidates();
+      refreshAllSelectors();
+      refreshESelectors();
+      updateStat();
+      log("Cをworkingへ反映しました。");
+    }
+    return out;
+  }
+
+  // =========================================================
+  // D: 面積（㎡）付与（working全体）
+  // =========================================================
+  function ensureD(){
+    if (!fcWorking){ log("WARN: 先にGeoJSONを読み込んでください。"); return false; }
+    const key = ($("#areaKey").value || "").trim();
+    if (!key){ log("WARN: 付与キー名（areaKey）が空です"); return false; }
+    const dec = Number(($("#areaDecimals").value || "0").trim());
+    if (!Number.isFinite(dec) || dec < 0 || dec > 10){ log("WARN: 小数桁は 0〜10 の数値にしてください"); return false; }
+    return true;
+  }
+
+  function buildOptionsD(){
+    const key = ($("#areaKey").value || "").trim();
+    const dec = Number(($("#areaDecimals").value || "0").trim());
+    const onlyPoly = $("#areaOnlyPolygons").checked;
+    const overwrite = $("#areaOverwrite").checked;
+    const factor = Math.pow(10, dec);
+    return { key, dec, onlyPoly, overwrite, factor };
+  }
+
+  function roundTo(n, factor){
+    return Math.round(n * factor) / factor;
+  }
+
+  function isPolygonLike(ft){
+    const t = ft?.geometry?.type;
+    return (t === "Polygon" || t === "MultiPolygon");
+  }
+
+  function previewD(){
+    if (!ensureD()) return;
+    const opt = buildOptionsD();
+    const feats = fcWorking.features || [];
+    let polyN = 0, nonPolyN = 0, hasGeomN = 0, noGeomN = 0;
+
+    for (const ft of feats){
+      if (!ft?.geometry){ noGeomN++; continue; }
+      hasGeomN++;
+      if (isPolygonLike(ft)) polyN++; else nonPolyN++;
+    }
+
+    log(`Dプレビュー: key=${opt.key}, decimals=${opt.dec}, overwrite=${opt.overwrite ? "ON" : "OFF"}, onlyPolygons=${opt.onlyPoly ? "ON" : "OFF"}`);
+    log(`対象: features=${feats.length}, geometry有=${hasGeomN}, geometry無=${noGeomN}, Polygon系=${polyN}, 非Polygon=${nonPolyN}`);
+  }
+
+  function applyD(applyToWorking){
+    if (!ensureD()) return null;
+    const opt = buildOptionsD();
+
+    const out = structuredClone(fcWorking);
+    const feats = out.features || [];
+
+    let wrote=0, skipped=0, nonPolySetNull=0, noGeomSetNull=0, err=0;
+
+    for (const ft of feats){
+      ft.properties = ft.properties || {};
+
+      if (!opt.overwrite && (opt.key in ft.properties)){
+        skipped++;
+        continue;
+      }
+
+      if (!ft?.geometry){
+        ft.properties[opt.key] = null;
+        noGeomSetNull++;
+        wrote++;
+        continue;
+      }
+
+      if (opt.onlyPoly && !isPolygonLike(ft)){
+        ft.properties[opt.key] = null;
+        nonPolySetNull++;
+        wrote++;
+        continue;
+      }
+
+      try{
+        const a = turf.area(ft);
+        const v = (Number.isFinite(a) ? roundTo(a, opt.factor) : null);
+        ft.properties[opt.key] = v;
+        wrote++;
+      }catch(e){
+        ft.properties[opt.key] = null;
+        err++;
+        wrote++;
+      }
+    }
+
+    log(`D付与: wrote=${wrote}, skipped(existing)=${skipped}, nonPoly->null=${nonPolySetNull}, noGeom->null=${noGeomSetNull}, errors=${err}`);
+
+    if (applyToWorking){
+      fcWorking = structuredClone(out);
+      valueCache.clear();
+      refreshKeyCandidates();
+      refreshAllSelectors();
+      refreshESelectors();
+      updateStat();
+      log("Dをworkingへ反映しました。");
+    }
+    return out;
+  }
+
+  // =========================================================
+  // E: 色（スタイル）編集（対象ファイル×キー×値） + 拡張2点
+  //   - 塗不透明度も別キーに書ける
+  //   - 対象値が空ならファイル全体に適用
+  // =========================================================
+  function getStyleApplyAllMode(){
+    const on = !!styleApplyAllEl?.checked;
+    const vals = parseList(styleValsEl?.value || "");
+    return on && (vals.length === 0);
+  }
+
+  function ensureE(){
+    if (!fcWorking){ log("WARN: 先にGeoJSONを読み込んでください。"); return false; }
+    const f = (styleFileSelEl?.value || "").trim();
+    if (!f){ log("WARN: 対象ファイルが未選択です"); return false; }
+
+    const applyAll = getStyleApplyAllMode();
+    if (applyAll){
+      // ファイル全体適用：キー/値は不要
+      return true;
+    }
+
+    const k = (styleKeySelEl?.value || "").trim();
+    const vals = parseList(styleValsEl?.value || "");
+    if (!k){ log("WARN: 対象キーが未選択です"); return false; }
+    if (vals.length === 0){ log("WARN: 対象値が空です（全体適用したい場合はチェックONで値を空にしてください）"); return false; }
+    return true;
+  }
+
+  function getIndicesByOrigin(fileBaseName){
+    const idxs = [];
+    for (let i=0;i<(workingOriginTags||[]).length;i++){
+      if (workingOriginTags[i] === fileBaseName) idxs.push(i);
+    }
+    return idxs;
+  }
+
+  function collectKeysFromWorkingForOrigin(fileBaseName, limit=8000){
+    if (!fcWorking?.features) return [];
+    const idxs = getIndicesByOrigin(fileBaseName);
+    const keys = new Set();
+    const n = Math.min(idxs.length, limit);
+    for (let ii=0; ii<n; ii++){
+      const i = idxs[ii];
+      const p = fcWorking.features[i]?.properties;
+      if (p && typeof p === "object"){
+        Object.keys(p).forEach(k=>keys.add(k));
+      }
+    }
+    return Array.from(keys).sort();
+  }
+
+  function collectValuesFromWorkingForOrigin(fileBaseName, key, limit=30000){
+    if (!fcWorking?.features) return [];
+    const idxs = getIndicesByOrigin(fileBaseName);
+    const vals = new Set();
+    const n = Math.min(idxs.length, limit);
+    for (let ii=0; ii<n; ii++){
+      const i = idxs[ii];
+      const p = fcWorking.features[i]?.properties;
+      if (!p) continue;
+      const v = p[key];
+      if (v == null) continue;
+      vals.add(String(v));
+    }
+    return Array.from(vals).sort((a,b)=>a.localeCompare(b,"ja"));
+  }
+
+  function refreshESelectors(){
+    if (!styleFileSelEl) return;
+
+    const currentFile = (styleFileSelEl.value || "").trim();
+    const fileList = loadedFiles.map(f=>f.baseName);
+
+    styleFileSelEl.innerHTML =
+      `<option value="">（選択）</option>` +
+      fileList.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+
+    if (currentFile && fileList.includes(currentFile)){
+      styleFileSelEl.value = currentFile;
+    } else {
+      styleFileSelEl.value = "";
+    }
+
+    refreshEKeyBySelectedFile();
+    renderEValueList();
+    updateEFilterBlockState();
+  }
+
+  function refreshEKeyBySelectedFile(){
+    if (!styleKeySelEl) return;
+    const f = (styleFileSelEl.value || "").trim();
+    const curK = (styleKeySelEl.value || "").trim();
+    let keys = [];
+    if (f){
+      keys = collectKeysFromWorkingForOrigin(f, 12000);
+    }
+    styleKeySelEl.innerHTML =
+      `<option value="">（選択）</option>` +
+      keys.map(k=>`<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`).join("");
+    if (curK && keys.includes(curK)) styleKeySelEl.value = curK;
+    else styleKeySelEl.value = "";
+  }
+
+  function renderEValueList(){
+    if (!styleValListEl) return;
+    const f = (styleFileSelEl.value || "").trim();
+    const k = (styleKeySelEl.value || "").trim();
+
+    if (!f || !k){
+      styleValListEl.innerHTML = `<div class="small">対象ファイルと対象キーを選ぶと候補が出ます</div>`;
+      styleValStatEl.textContent = "候補: -";
+      return;
+    }
+
+    const cacheKey = `Evals::${f}::${k}`;
+    let all = valueCache.get(cacheKey);
+    if (!all){
+      all = collectValuesFromWorkingForOrigin(f, k, 40000);
+      valueCache.set(cacheKey, all);
+    }
+
+    const q = (styleValSearchEl.value || "").trim().toLowerCase();
+    const shown = q ? all.filter(v=>v.toLowerCase().includes(q)) : all;
+    styleValStatEl.textContent = `候補: ${shown.length} / ${all.length}`;
+
+    const take = shown.slice(0, 500);
+    styleValListEl.innerHTML = take.map(v=>`
+      <div class="candItem" data-v="${escapeHtml(v)}" title="クリックで追加">
+        <div class="v">${escapeHtml(v)}</div>
+        <div class="add">＋追加</div>
+      </div>
+    `).join("") + (shown.length>500 ? `<div class="small" style="margin-top:6px;">表示は先頭500件まで（絞り込みで候補を減らしてください）</div>` : "");
+
+    styleValListEl.querySelectorAll(".candItem").forEach(el=>{
+      el.addEventListener("click", ()=>{
+        const v = el.getAttribute("data-v");
+        addValueToTextarea(styleValsEl, v);
+      });
+    });
+  }
+
+  function parseNumberMaybe(s){
+    const n = Number(String(s).trim());
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function readStyleInputs(){
+    const strokeKey = ($("#styleStrokeKey").value || "").trim();
+    const fillKey = ($("#styleFillKey").value || "").trim();
+    const weightKey = ($("#styleWeightKey").value || "").trim();
+    const opacityKey = ($("#styleOpacityKey").value || "").trim();
+
+    // ★拡張：塗不透明度キー
+    const fillOpacityKey = ($("#styleFillOpacityKey").value || "").trim();
+
+    const strokeColor = ($("#strokeColorText").value || "").trim();
+    const fillColor = ($("#fillColorText").value || "").trim();
+    const weight = parseNumberMaybe($("#strokeWeight").value);
+    const strokeOpacity = parseNumberMaybe($("#strokeOpacity").value);
+    const fillOpacity = parseNumberMaybe($("#fillOpacity").value);
+
+    const overwrite = $("#styleOverwrite").checked;
+
+    return {
+      strokeKey, fillKey, weightKey,
+      opacityKey, fillOpacityKey,
+      strokeColor, fillColor,
+      weight, strokeOpacity, fillOpacity,
+      overwrite
+    };
+  }
+
+  function warnIfSameOpacityKeys(st){
+    if (!st.opacityKey || !st.fillOpacityKey) return;
+    if (st.opacityKey === st.fillOpacityKey){
+      log("WARN: 線不透明度キーと塗不透明度キーが同一です（同じキーに書くと上書きになります）。");
+    }
+  }
+
+  function updateEFilterBlockState(){
+    if (!styleFilterBlockEl) return;
+    const applyAll = getStyleApplyAllMode();
+    // applyAll ならフィルタ入力は“意味がない”ので視覚的に無効化（壊さない＝隠さない）
+    styleFilterBlockEl.classList.toggle("dim", applyAll);
+  }
+
+  function previewE(){
+    if (!ensureE()) return;
+
+    const fileName = (styleFileSelEl.value || "").trim();
+    const idxs = getIndicesByOrigin(fileName);
+    const applyAll = getStyleApplyAllMode();
+
+    let hit = 0;
+    let total = idxs.length;
+
+    if (applyAll){
+      hit = total;
+    } else {
+      const key = (styleKeySelEl.value || "").trim();
+      const valsRaw = parseList(styleValsEl.value || "");
+      const setVals = new Set(valsRaw.map(v=>String(v)));
+      for (const i of idxs){
+        const v = fcWorking.features[i]?.properties?.[key];
+        if (v != null && setVals.has(String(v))) hit++;
+      }
+    }
+
+    const st = readStyleInputs();
+    warnIfSameOpacityKeys(st);
+
+    log(`Eプレビュー: file=${fileName}`);
+    if (applyAll){
+      log(`  モード: ファイル全体適用（対象値が空）`);
+    } else {
+      const key = (styleKeySelEl.value || "").trim();
+      const valsRaw = parseList(styleValsEl.value || "");
+      log(`  モード: 条件適用 / key=${key} / values=${valsRaw.length}`);
+    }
+    log(`  対象候補: origin=${total} / 一致(or全体)=${hit}`);
+    log(`  書き込みキー: stroke=${st.strokeKey}, fill=${st.fillKey}, weight=${st.weightKey}, opacity(line)=${st.opacityKey}, opacity(fill)=${st.fillOpacityKey||"(なし)"}`);
+    log(`  値: stroke=${st.strokeColor}, fill=${st.fillColor}, weight=${st.weight}, opacity(line/fill)=${st.strokeOpacity}/${st.fillOpacity}, overwrite=${st.overwrite?"ON":"OFF"}`);
+  }
+
+  function applyE(applyToWorking){
+    if (!ensureE()) return null;
+
+    const fileName = (styleFileSelEl.value || "").trim();
+    const idxs = getIndicesByOrigin(fileName);
+    const st = readStyleInputs();
+    warnIfSameOpacityKeys(st);
+
+    const out = structuredClone(fcWorking);
+    const target = applyToWorking ? fcWorking : out;
+
+    const applyAll = getStyleApplyAllMode();
+
+    let key = "";
+    let setVals = null;
+    if (!applyAll){
+      key = (styleKeySelEl.value || "").trim();
+      const valsRaw = parseList(styleValsEl.value || "");
+      setVals = new Set(valsRaw.map(v=>String(v)));
+    }
+
+    let hit=0, wrote=0;
+
+    for (const i of idxs){
+      const ft = target.features[i];
+      ft.properties = ft.properties || {};
+
+      // 条件適用の場合のみフィルタ
+      if (!applyAll){
+        const v = ft?.properties?.[key];
+        if (v == null || !setVals.has(String(v))) continue;
+      }
+
+      // overwrite OFF のとき：既にキーがある場合は触らない（キーごとに判定）
+      const canWrite = (propKey) => {
+        if (!propKey) return false;
+        if (st.overwrite) return true;
+        return !(propKey in ft.properties);
+      };
+      // 色（変更しない：線幅・不透明度のみ適用）
+      // 線幅
+      if (st.weight != null && canWrite(st.weightKey)) ft.properties[st.weightKey] = st.weight;
+
+      // 線不透明度
+      if (st.strokeOpacity != null && canWrite(st.opacityKey)) ft.properties[st.opacityKey] = st.strokeOpacity;
+
+      // ★拡張：塗不透明度（別キー）
+      if (st.fillOpacity != null && st.fillOpacityKey && canWrite(st.fillOpacityKey)) {
+        ft.properties[st.fillOpacityKey] = st.fillOpacity;
+      }
+
+      hit++;
+      wrote++;
+    }
+
+    log(`E適用: origin=${idxs.length}, hit(orAllApplied)=${hit}, wrote=${wrote}`);
+
+    if (applyToWorking){
+      valueCache.clear();
+      refreshKeyCandidates();
+      refreshAllSelectors();
+      refreshESelectors();
+      updateStat();
+      log("Eをworkingへ反映しました。");
+    }
+    return out;
+  }
+
+  // =========================================================
+  // F. 点→面 包含判定（ポイントにフラグ/属性付与）
+  // =========================================================
+  function ensureF(){
+    const tName = ($("#pipTargetSelect").value || "").trim();
+    const jName = ($("#pipJudgeSelect").value || "").trim();
+    const outKey = ($("#pipOutKey").value || "").trim();
+
+    if (!tName){ alert("書き込み対象（ポイント）を選択してください"); return false; }
+    if (!jName){ alert("判断用（ポリゴン）を選択してください"); return false; }
+    if (!outKey){ alert("ポイントに付与するフラグ新キー名を入力してください"); return false; }
+
+    const fcT = getLoadedFCByBaseName(tName);
+    const fcJ = getLoadedFCByBaseName(jName);
+    if (!fcT || !fcT.features){ alert("書き込み対象（ポイント）のデータが取得できません"); return false; }
+    if (!fcJ || !fcJ.features){ alert("判断用（ポリゴン）のデータが取得できません"); return false; }
+
+    const writePoly = $("#pipWritePolyVal").checked;
+    if (writePoly){
+      const outKey2 = ($("#pipPolyValOutKey").value || "").trim();
+      const polyK   = ($("#pipPolyKeySelect").value || "").trim();
+      if (!outKey2){ alert("ポイント側に作成する新キー名を入力してください"); return false; }
+      if (!polyK){ alert("書き込むポリゴン側キーを選択してください"); return false; }
+    }
+    return true;
+  }
+
+  function applyF(applyToWorking){
+    if (!ensureF()) return null;
+
+    const tName = ($("#pipTargetSelect").value || "").trim();
+    const jName = ($("#pipJudgeSelect").value || "").trim();
+    const outKey = ($("#pipOutKey").value || "").trim();
+    const writePoly = $("#pipWritePolyVal").checked;
+    const outKey2 = ($("#pipPolyValOutKey").value || "").trim();
+    const polyK   = ($("#pipPolyKeySelect").value || "").trim();
+
+    const fcT = structuredClone(getLoadedFCByBaseName(tName));
+    const fcJ = getLoadedFCByBaseName(jName);
+
+    // ポリゴンのみ抽出
+    const polys = (fcJ.features || []).filter(ft => {
+      const t = ft?.geometry?.type;
+      return t === "Polygon" || t === "MultiPolygon";
+    });
+
+    let hitCount = 0;
+    let totalPts = 0;
+
+    for (const ft of (fcT.features || [])){
+      const g = ft?.geometry;
+      if (!g) continue;
+
+      const gtype = g.type;
+      const props = ft.properties || (ft.properties = {});
+      let inside = false;
+      let polyVals = [];
+
+      const checkPoint = (ptGeom) => {
+        if (!ptGeom) return;
+        const pt = { type:"Feature", properties:{}, geometry: ptGeom };
+        let foundAny = false;
+        for (const pg of polys){
+          try{
+            if (turf.booleanPointInPolygon(pt, pg)){
+              foundAny = true;
+              if (writePoly){
+                const v = (pg.properties||{})[polyK];
+                if (v !== undefined && v !== null && String(v).trim() !== ""){
+                  polyVals.push(String(v));
+                }
+              }
+            }
+          }catch(e){
+            // 形状エラーはスキップ（既存機能影響回避）
+          }
+        }
+        if (foundAny) inside = true;
+      };
+
+      if (gtype === "Point"){
+        totalPts++;
+        checkPoint(g);
+      }else if (gtype === "MultiPoint" && Array.isArray(g.coordinates)){
+        totalPts += g.coordinates.length;
+        for (const c of g.coordinates){
+          checkPoint({ type:"Point", coordinates: c });
+        }
+      }else{
+        // ポイント以外はそのまま（安全側）
+      }
+
+      props[outKey] = inside ? 1 : 0;
+      if (inside) hitCount++;
+
+      if (writePoly){
+        // 重複除去して連結
+        const uniq = [...new Set(polyVals)];
+        props[outKey2] = uniq.join(" | ");
+      }
+    }
+
+    log(`F: target=${tName}, judge=${jName}, polys=${polys.length}, pts=${totalPts}, hitFeatures=${hitCount}`);
+
+    if (applyToWorking){
+      fcWorking = fcT;
+      renderWorking();
+      refreshAllSelectors();
+      log("Fをworkingへ反映しました。");
+    }
+    return fcT;
+  }
+
+
+
+  // =========================================================
+  // 右：処理イメージ枠
+  // =========================================================
+  const FEATURE_META = {
+    "ALL": { title: "処理イメージ（プレースホルダ）", desc: "全体表示中です。左の機能選択で、個別メニュー表示に切り替えできます。", pid: "ALL" },
+    "A": { title: "A. 重複フラグ付与", desc: "基準抽出キー/値に該当するシェイプと重複するfeatureへフラグを付与します。", pid: "A_OVERLAP" },
+    "B": { title: "B. 条件削除", desc: "指定キーの値が一致するfeatureをすべて削除します（workingに保持）。", pid: "B_DELETE" },
+    "C": { title: "C. 連番付与", desc: "すべてのfeatureに重複のない連番（uid等）を付与します（workingに保持）。", pid: "C_NUMBER" },
+    "D": { title: "D. 面積（㎡）付与", desc: "Polygon/MultiPolygon に面積（㎡）を付与します（workingに保持）。", pid: "D_AREA" },
+    "E": { title: "E. 色（スタイル）編集", desc: "対象ファイル×キー×値で抽出したfeatureに色情報（STROKE/FILL等）を書き込みます。拡張：全体適用/塗不透明度キー。", pid: "E_STYLE" },
+  };
+
+  const PID_META = {
+    "LOAD": { title: "読み込み/統合", desc: "GeoJSONを読み込み、統合して作業データ（working）を初期化します。" },
+    "GROUP": { title: "データ区分（A/B）", desc: "読み込んだ複数データをA（1つ）とB（複数）に区分します。" },
+    "A_OVERLAP": { title: "A. 重複フラグ付与", desc: "重複の有無を0/1で書き込みます（A由来featureのみ更新）。" },
+    "B_DELETE": { title: "B. 条件削除", desc: "指定キーの値が一致するfeatureを削除します（workingに保持）。" },
+    "C_NUMBER": { title: "C. 連番付与", desc: "全featureに一意な連番を付与します（workingに保持）。" },
+    "D_AREA": { title: "D. 面積（㎡）付与", desc: "Polygon/MultiPolygon に面積（㎡）を書き込みます（workingに保持）。" },
+    "E_STYLE": { title: "E. 色（スタイル）編集", desc: "対象ファイル×キー×値（または全体適用）で抽出し、STROKE/FILL等の色情報を書き換えます。塗不透明度キーにも対応。" },
+    "EXPORT_WORKING": { title: "一括出力（working）", desc: "これまでの処理を反映したworkingをGeoJSONとして出力します。" },
+    "EXPORT_BASE": { title: "読み込み直後（merged原本）出力", desc: "読み込み直後の統合データ（base）をGeoJSONとして出力します。" },
+    "RESET_WORKING": { title: "workingを読み込み直後へ戻す", desc: "workingをbase（読み込み直後）にリセットします。" },
+    "CLEAR_ALL": { title: "全クリア", desc: "base/working/候補キャッシュを初期化します。" },
+  };
+
+  function setImagePaneByPid(pid, title, summary){
+    const meta = (pid && PID_META[pid]) ? PID_META[pid] : null;
+    const t = meta?.title || title || "処理イメージ（プレースホルダ）";
+    const d = meta?.desc || "";
+    if (imageTitleEl) imageTitleEl.textContent = t;
+    if (imageDescEl){
+      const extra = summary ? (`\n\n【今回の内容】\n${summary}`) : "";
+      imageDescEl.textContent = d + extra;
+    }
+    if (imagePlaceholderEl){
+      imagePlaceholderEl.innerHTML = `画像ID: <b>${escapeHtml(pid || "")}</b><br>（このIDに対応する画像を後から差し替え可能）`;
+    }
+  }
+
+  function applyFeatureVisibility(){
+    const sel = (featureSelectEl?.value || "ALL");
+    document.querySelectorAll(".featureSection").forEach(sec => {
+      const feat = sec.getAttribute("data-feature");
+      const show = (sel === "ALL" || sel === feat);
+      sec.classList.toggle("hidden", !show);
+    });
+    const meta = FEATURE_META[sel] || FEATURE_META["ALL"];
+    if (imageTitleEl) imageTitleEl.textContent = meta.title;
+    if (imageDescEl) imageDescEl.textContent = meta.desc;
+    if (imagePlaceholderEl) imagePlaceholderEl.innerHTML = `画像ID: <b>${escapeHtml(meta.pid || "")}</b><br>（このIDに対応する画像を後から差し替え可能）`;
+  }
+
+  // =========================================================
+  // イベント結線
+  // =========================================================
+  fileEl.addEventListener("change", async (e)=>{
+    const files = Array.from(e.target.files || []);
+    if (files.length===0) return;
+    await onLoadFiles(files);
+  });
+
+  if (groupAEl){
+    groupAEl.addEventListener("change", ()=>{
+      pullGroupStateFromUI();
+      refreshAllSelectors();
+      renderAValueList();
+      refreshESelectors();
+      pushFlowOp({ type:"GROUP", title:"データAを更新", pid:"GROUP", summary:`A=${groupState.A||"-"}\nB=${groupState.Bs.filter(Boolean).join(", ")||"-"}` });
+      setImagePaneByPid("GROUP", "データ区分（A/B）", `A=${groupState.A || "-"} / B=${groupState.Bs.filter(Boolean).join(", ") || "-"}`);
+    });
+  }
+  if (btnAutoGroup) btnAutoGroup.addEventListener("click", autoAssignGroups);
+  if (btnClearGroup) btnClearGroup.addEventListener("click", clearGroups);
+
+  // 候補イベント（A）
+  $("#refKey").addEventListener("input", renderAValueList);
+  refKeySelEl.addEventListener("change", ()=>{
+    const v = (refKeySelEl.value || "").trim();
+    if (!v) return;
+    const inp = $("#refKey");
+    inp.value = v;
+    inp.dispatchEvent(new Event("input", {bubbles:true}));
+  });
+
+
+  if (overlapBSelectEl){
+    overlapBSelectEl.addEventListener("change", ()=>{
+      // Bを変えたら refKey 候補と refVals 候補を更新
+      refreshRefKeyCandidatesFromB();
+      renderAValueList();
+    });
+  }
+  valSearchEl.addEventListener("input", renderAValueList);
+  $("#btnAddAll").addEventListener("click", ()=>addAllShownToTextarea({ textareaEl: $("#refVals"), listRootEl: valListEl }));
+  $("#btnClearVals").addEventListener("click", ()=>{ $("#refVals").value=""; });
+
+  // 候補イベント（B）
+  $("#delKey").addEventListener("input", renderBValueList);
+  delKeySelEl.addEventListener("change", ()=>{
+    const v = (delKeySelEl.value || "").trim();
+    if (!v) return;
+    const inp = $("#delKey");
+    inp.value = v;
+    inp.dispatchEvent(new Event("input", {bubbles:true}));
+  });
+  delValSearchEl.addEventListener("input", renderBValueList);
+  $("#btnDelAddAll").addEventListener("click", ()=>addAllShownToTextarea({ textareaEl: $("#delVals"), listRootEl: delValListEl }));
+  $("#btnDelClearVals").addEventListener("click", ()=>{ $("#delVals").value=""; });
+
+  // selectが空のときfocusで復旧
+  refKeySelEl.addEventListener("focus", ()=>{ if (refKeySelEl.options.length <= 1) refreshAllSelectors(); });
+  delKeySelEl.addEventListener("focus", ()=>{ if (delKeySelEl.options.length <= 1) refreshAllSelectors(); });
+
+  // ログクリア
+  $("#btnLogClear").addEventListener("click", () => {
+    clearLog();
+    clearFlowLog();
+    logSection("ログをクリアしました");
+  });
+
+  // ログ表示切替
+  btnTabText.addEventListener("click", () => setLogMode("text"));
+  btnTabFlow.addEventListener("click", () => setLogMode("flow"));
+
+
+  // workingマップ表示（右上プレビュー）
+  if (toggleMapEl){
+    toggleMapEl.addEventListener("change", ()=>{
+      showMapUI(toggleMapEl.checked);
+    });
+  }
+  if (btnRefreshMapEl){
+    btnRefreshMapEl.addEventListener("click", ()=>{
+      showMapUI(true);
+      refreshMap();
+    });
+  }
+
+
+  // 一括出力/リセット/原本出力
+  $("#btnExportWorking").addEventListener("click", () => {
+    logSection("一括出力（working）");
+    if (!fcWorking) { log("WARN: workingがありません"); return; }
+    pushFlowOp({ type:"EXPORT", title:"一括出力（working）", pid:"EXPORT_WORKING", summary:`features=${fcWorking.features?.length || 0}` });
+    exportWorking();
+  });
+
+  $("#btnResetWorking").addEventListener("click", () => {
+    logSection("workingをbaseへ戻す");
+    if (!fcBase) { log("WARN: baseがありません"); return; }
+    pushFlowOp({ type:"RESET", title:"workingを読み込み直後へ戻す", pid:"RESET_WORKING", summary:`features=${fcBase.features?.length || 0}` });
+    resetWorkingToBase();
+  });
+
+  $("#btnExportMerged").addEventListener("click", () => {
+    logSection("merged原本を書き出し");
+    if (!fcBase) { log("WARN: merged原本がありません"); return; }
+    pushFlowOp({ type:"EXPORT", title:"読み込み直後（merged原本）を書き出し", pid:"EXPORT_BASE", summary:`features=${fcBase.features?.length || 0}` });
+    exportMergedBase();
+  });
+
+  // A
+  $("#btnPreviewA").addEventListener("click", () => { logSection("A プレビュー"); previewA(); });
+
+  $("#btnCancelA").addEventListener("click", () => {
+    cancelApplyA = true;
+    if (btnCancelAEl) btnCancelAEl.disabled = true; // 連打防止
+    log("INFO: キャンセル要求を受け付けました。安全なタイミングで停止します。");
+  });
+  $("#btnApplyA").addEventListener("click", async () => {
+    logSection("A workingへ適用（保持）");
+    const auto = autoDownloadEl.checked;
+    const out = await applyA(true);
+    if (out){
+      const opt = buildOptionsA();
+      pullGroupStateFromUI();
+      pushFlowOp({ type:"A", title:"A 適用（重複フラグ付与）", pid:"A_OVERLAP",
+        summary:`A=${groupState.A||"(未指定=全体)"}\nB=${opt.bPick||"(未指定)"}\nrefKey=${opt.refKey}\nrefValues=${(opt.refValues||[]).slice(0,20).join(", ")}${(opt.refValues||[]).length>20?" …":""}\noutKey=${opt.outKey}\nmethod=${opt.method}` });
+      setImagePaneByPid("A_OVERLAP", "A. 重複フラグ付与", "workingに積み上げ（A由来featureのみ更新）");
+    }
+    if (auto && out) exportFC(fcWorking, "A_applied_working");
+  });
+  $("#btnExportA").addEventListener("click", async () => {
+    logSection("A 単発出力（workingは保持）");
+    if (!ensureA()) return;
+    const out = await applyA(false);
+    if (out) exportFC(out, "A_only_preview");
+  });
+
+  // B
+  $("#btnPreviewB").addEventListener("click", () => { logSection("B 削除プレビュー"); previewB(); });
+  $("#btnApplyB").addEventListener("click", () => {
+    logSection("B workingへ適用（保持）");
+    const auto = autoDownloadEl.checked;
+    const out = applyB(true);
+    if (out){
+      const k = ($("#delKey").value || "").trim();
+      const vals = parseList($("#delVals").value);
+      const label = ($("#delLabel").value || "removed").trim() || "removed";
+      pushFlowOp({ type:"B", title:"B 適用（条件削除）", pid:"B_DELETE",
+        summary:`delKey=${k}\nvalues=${vals.slice(0,20).join(", ")}${vals.length>20?" …":""}\nlabel=${label}` });
+      setImagePaneByPid("B_DELETE", "B. 条件削除", "working全体へ適用（originTagsも同期削除）");
+    }
+    if (auto && out) exportFC(out, "B_applied");
+  });
+  $("#btnExportB").addEventListener("click", () => {
+    logSection("B 単発出力（workingは保持）");
+    if (!ensureB()) return;
+    const out = applyB(false);
+    const label = ($("#delLabel").value || "removed").trim() || "removed";
+    if (out) exportFC(out, `B_only_${label}`);
+  });
+
+  // C
+  $("#btnPreviewC").addEventListener("click", () => { logSection("C プレビュー"); previewC(); });
+  $("#btnApplyC").addEventListener("click", () => {
+    logSection("C workingへ適用（保持）");
+    const auto = autoDownloadEl.checked;
+    const out = applyC(true);
+    if (out){
+      const key = ($("#numKey").value || "uid").trim() || "uid";
+      const start = ($("#numStart").value || "1").trim() || "1";
+      const prefix = ($("#numPrefix").value || "").trim();
+      const pad = ($("#numPad").value || "").trim();
+      pushFlowOp({ type:"C", title:"C 適用（連番付与）", pid:"C_NUMBER",
+        summary:`key=${key}\nstart=${start}\nprefix=${prefix || "(なし)"}\npad=${pad || "(なし)"}` });
+      setImagePaneByPid("C_NUMBER", "C. 連番付与", "working全体へ適用（従来挙動）");
+    }
+    if (auto && out) exportFC(out, "C_applied");
+  });
+  $("#btnExportC").addEventListener("click", () => {
+    logSection("C 単発出力（workingは保持）");
+    if (!ensureC()) return;
+    const out = applyC(false);
+    if (out) exportFC(out, "C_only");
+  });
+
+  // D
+  $("#btnPreviewD").addEventListener("click", () => { logSection("D 面積付与プレビュー"); previewD(); });
+  $("#btnApplyD").addEventListener("click", () => {
+    logSection("D workingへ適用（保持）");
+    const auto = autoDownloadEl.checked;
+    const out = applyD(true);
+    if (out){
+      const opt = buildOptionsD();
+      pushFlowOp({ type:"D", title:"D 適用（面積㎡付与）", pid:"D_AREA",
+        summary:`key=${opt.key}\ndecimals=${opt.dec}\noverwrite=${opt.overwrite ? "ON" : "OFF"}\nonlyPolygons=${opt.onlyPoly ? "ON" : "OFF"}` });
+      setImagePaneByPid("D_AREA", "D. 面積（㎡）付与", "working全体へ適用（Polygon系に面積を付与）");
+    }
+    if (auto && out) exportFC(out, "D_applied");
+  });
+  $("#btnExportD").addEventListener("click", () => {
+    logSection("D 単発出力（workingは保持）");
+    if (!ensureD()) return;
+    const out = applyD(false);
+    if (out) exportFC(out, "D_only_area");
+  });
+
+  // ===== E 色編集イベント =====
+  function syncColorTextFromPicker(pickerId, textId){
+    const p = $(pickerId), t = $(textId);
+    if (!p || !t) return;
+    t.value = p.value;
+  }
+  function syncColorPickerFromText(pickerId, textId){
+    const p = $(pickerId), t = $(textId);
+    if (!p || !t) return;
+    const v = (t.value||"").trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) p.value = v;
+  }
+
+  if (styleFileSelEl){
+    styleFileSelEl.addEventListener("change", ()=>{
+      valueCache.clear();
+      refreshEKeyBySelectedFile();
+      renderEValueList();
+      updateEFilterBlockState();
+      pushFlowOp({ type:"E", title:"E 対象ファイル変更", pid:"E_STYLE", summary:`file=${styleFileSelEl.value||"-"}` });
+    });
+  }
+  if (styleKeySelEl){
+    styleKeySelEl.addEventListener("change", ()=>{
+      valueCache.clear();
+      renderEValueList();
+      updateEFilterBlockState();
+      pushFlowOp({ type:"E", title:"E 対象キー変更", pid:"E_STYLE", summary:`file=${styleFileSelEl.value||"-"}\nkey=${styleKeySelEl.value||"-"}` });
+    });
+  }
+  if (styleValSearchEl) styleValSearchEl.addEventListener("input", renderEValueList);
+  if (btnStyleAddAllEl) btnStyleAddAllEl.addEventListener("click", ()=>addAllShownToTextarea({ textareaEl: styleValsEl, listRootEl: styleValListEl }));
+  if (btnStyleClearValsEl) btnStyleClearValsEl.addEventListener("click", ()=>{ styleValsEl.value=""; updateEFilterBlockState(); });
+
+  // ★拡張：全体適用モードの見た目制御
+  if (styleApplyAllEl){
+    styleApplyAllEl.addEventListener("change", ()=>{
+      updateEFilterBlockState();
+      pushFlowOp({ type:"E", title:"E 全体適用モード切替", pid:"E_STYLE", summary:`applyAllIfEmpty=${styleApplyAllEl.checked ? "ON" : "OFF"}` });
+    });
+  }
+  if (styleValsEl){
+    styleValsEl.addEventListener("input", ()=>{
+      updateEFilterBlockState();
+    });
+  }
+
+  // 色の同期
+  $("#strokeColor").addEventListener("input", ()=>syncColorTextFromPicker("#strokeColor","#strokeColorText"));
+  $("#fillColor").addEventListener("input", ()=>syncColorTextFromPicker("#fillColor","#fillColorText"));
+  $("#strokeColorText").addEventListener("input", ()=>syncColorPickerFromText("#strokeColor","#strokeColorText"));
+  $("#fillColorText").addEventListener("input", ()=>syncColorPickerFromText("#fillColor","#fillColorText"));
+
+  $("#btnPreviewE").addEventListener("click", ()=>{ logSection("E 色編集プレビュー"); previewE(); });
+  $("#btnApplyE").addEventListener("click", ()=>{
+    logSection("E 色編集をworkingへ適用（保持）");
+    const auto = autoDownloadEl.checked;
+    const out = applyE(true);
+    if (out){
+      const fileName = (styleFileSelEl.value || "").trim();
+      const applyAll = getStyleApplyAllMode();
+      let summary = `file=${fileName}\nmode=${applyAll ? "ALL" : "FILTER"}`;
+      if (!applyAll){
+        const key = (styleKeySelEl.value || "").trim();
+        const vals = parseList(styleValsEl.value || "");
+        summary += `\nkey=${key}\nvalues=${vals.slice(0,20).join(", ")}${vals.length>20?" …":""}`;
+      }
+      const st = readStyleInputs();
+      summary += `\nwriteKeys: weight:${st.weightKey}, opacity(line):${st.opacityKey}, opacity(fill):${st.fillOpacityKey||"(なし)"}`
+              +  `\ncolors: (unchanged)`
+              +  `\nweight=${st.weight}, opacity(line/fill)=${st.strokeOpacity}/${st.fillOpacity}, overwrite=${st.overwrite?"ON":"OFF"}`;
+
+      pushFlowOp({ type:"E", title:"E 適用（色/スタイル編集）", pid:"E_STYLE", summary });
+      setImagePaneByPid("E_STYLE", "E. 色（スタイル）編集", "workingに積み上げ（条件/全体適用）");
+    }
+    if (auto && out) exportFC(fcWorking, "E_applied_working");
+  });
+  $("#btnExportE").addEventListener("click", ()=>{
+    logSection("E 単発出力（workingは保持）");
+    if (!ensureE()) return;
+    const out = applyE(false);
+    if (out) exportFC(out, "E_only_preview");
+  });
+
+  // F
+  $("#pipJudgeSelect")?.addEventListener("change", ()=>{
+    refreshPipSelectors();
+  });
+  $("#pipTargetSelect")?.addEventListener("change", ()=>{
+    // nothing special for now
+  });
+  $("#pipWritePolyVal")?.addEventListener("change", ()=>{
+    // UI的にはそのまま（必須チェックはensureFで実施）
+  });
+
+  $("#btnPreviewF")?.addEventListener("click", ()=>{
+    logSection("F プレビュー（反映なし）");
+    if (!ensureF()) return;
+    const out = applyF(false);
+    if (out) exportFC(out, "F_preview_points");
+  });
+  $("#btnApplyF")?.addEventListener("click", ()=>{
+    logSection("F workingへ反映");
+    if (!ensureF()) return;
+    applyF(true);
+  });
+  $("#btnExportF")?.addEventListener("click", ()=>{
+    logSection("F 単発出力（workingは保持）");
+    if (!ensureF()) return;
+    const out = applyF(false);
+    if (out) exportFC(out, "F_points_in_poly");
+  });
+
+
+
+  // 全クリア
+  $("#btnClear").addEventListener("click", () => {
+    logSection("全クリア");
+    pushFlowOp({ type:"CLEAR", title:"全クリア", pid:"CLEAR_ALL", summary:"base/working/候補キャッシュを初期化" });
+
+    fcBase = null;
+    fcWorking = null;
+    loadedFiles = [];
+    valueCache.clear();
+    lastKeys = [];
+    baseOriginTags = [];
+    workingOriginTags = [];
+
+    $("#refKey").value = "";
+    $("#refVals").value = "";
+    $("#outKey").value = "";
+    $("#valSearch").value = "";
+    valStatEl.textContent = "候補: -";
+    valListEl.innerHTML = `<div class="small">refKey を入力すると候補が出ます</div>`;
+
+    $("#delKey").value = "";
+    $("#delVals").value = "";
+    $("#delLabel").value = "removed";
+    $("#delValSearch").value = "";
+    delValStatEl.textContent = "候補: -";
+    delValListEl.innerHTML = `<div class="small">delKey を入力すると候補が出ます</div>`;
+
+    $("#numKey").value = "uid";
+    $("#numStart").value = "1";
+    $("#numPrefix").value = "";
+    $("#numPad").value = "";
+
+    $("#areaKey").value = "area_m2";
+    $("#areaDecimals").value = "0";
+    $("#areaOnlyPolygons").checked = true;
+    $("#areaOverwrite").checked = true;
+
+    // E
+    if (styleFileSelEl) styleFileSelEl.innerHTML = `<option value="">（選択）</option>`;
+    if (styleKeySelEl) styleKeySelEl.innerHTML = `<option value="">（選択）</option>`;
+    if (styleValListEl) styleValListEl.innerHTML = `<div class="small">対象ファイルと対象キーを選ぶと候補が出ます</div>`;
+    if (styleValStatEl) styleValStatEl.textContent = "候補: -";
+    if (styleValSearchEl) styleValSearchEl.value = "";
+    if (styleValsEl) styleValsEl.value = "";
+    if (styleApplyAllEl) styleApplyAllEl.checked = true;
+    updateEFilterBlockState();
+
+    groupAEl.value = "";
+    groupState = {A:"", Bs:[]};
+    rebuildGroupBInputs();
+    rebuildFileNameDatalist();
+
+    keyListEl.innerHTML = "";
+    delKeySelEl.innerHTML = `<option value="">（選択）</option>`;
+    refKeySelEl.innerHTML = `<option value="">（選択）</option>`;
+
+    updateStat();
+    log("Ready.");
+  });
+
+  // 機能表示
+  if (featureSelectEl) featureSelectEl.addEventListener("change", applyFeatureVisibility);
+
+  // 初期化
+  updateStat();
+  applyFeatureVisibility();
+  setLogMode("text");
+  logEl.textContent = "Ready.";
+  logSection("起動");
+  log("複数GeoJSONを選択すると統合し、base/working を初期化します。");
+
+  // E初期同期
+  $("#strokeColorText").value = $("#strokeColor").value;
+  $("#fillColorText").value = $("#fillColor").value;
+  updateEFilterBlockState();
+})();
+</script>
+</body>
+</html>
